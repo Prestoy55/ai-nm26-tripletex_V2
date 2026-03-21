@@ -37,8 +37,10 @@ class CreateEmployeeIntent(BaseModel):
     employee_number: str | None = None
     department_name: str | None = None
     position_code: str | None = None
+    job_title: str | None = None
     annual_salary: float | None = None
     employment_percentage: float | None = None
+    daily_working_hours: float | None = None
     start_date: str | None = None
     user_type: Literal["STANDARD", "EXTENDED", "NO_ACCESS"] | None = None
     entitlement_template: (
@@ -178,6 +180,7 @@ class VoucherPostingIntent(BaseModel):
     amount: float = Field(gt=0)
     description: str | None = None
     vat_type_id: int | None = None
+    department_name: str | None = None
 
 
 class TravelExpenseDetailsIntent(BaseModel):
@@ -202,6 +205,8 @@ class CreateTravelExpenseIntent(BaseModel):
     employee_last_name: str
     employee_email: str | None = None
     details: TravelExpenseDetailsIntent | None = None
+    per_diem_entries: list[dict[str, object]] = Field(default_factory=list)
+    expense_entries: list[dict[str, object]] = Field(default_factory=list)
 
 
 class DeleteTravelExpenseIntent(BaseModel):

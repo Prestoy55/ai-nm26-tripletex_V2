@@ -60,6 +60,7 @@ Important mapping rules:
 - If the user asks to delete a travel expense, use delete_travel_expense and extract the travel expense title plus the employee first and last name.
 - If the prompt includes an employee birth date for an update, put it in new_date_of_birth using ISO format.
 - If the user asks to create a project for a customer in an otherwise empty account, include the customer subobject so the compiler can create the customer first.
+- If the user asks to register a supplier/vendor/leverandor/proveedor/fournisseur/fornecedor, use create_customer with is_supplier=true and is_customer=false.
 - For invoices, extract customer details and invoice lines. The compiler will create customer, order, and invoice in that order.
 - For invoices, default send_to_customer=false unless the prompt explicitly says to send, email, dispatch, or deliver the invoice to the customer.
 - If the user asks to register payment for an invoice that is being created in the same task, use create_invoice and set register_full_payment=true.
@@ -231,6 +232,20 @@ def normalize_intent_payload(payload: object) -> object:
     if task_type == "create_project":
         if "project_name" in payload and "name" not in payload:
             payload["name"] = payload.pop("project_name")
+        project_manager = payload.pop("project_manager", None)
+        if isinstance(project_manager, dict):
+            if "project_manager_email" not in payload and isinstance(project_manager.get("email"), str):
+                payload["project_manager_email"] = project_manager["email"]
+            manager_name = first_non_none(
+                project_manager.get("name"),
+                project_manager.get("full_name"),
+            )
+            if isinstance(manager_name, str):
+                first_name, last_name = split_person_name(manager_name)
+                if first_name and "project_manager_first_name" not in payload:
+                    payload["project_manager_first_name"] = first_name
+                if last_name and "project_manager_last_name" not in payload:
+                    payload["project_manager_last_name"] = last_name
         if "projectManagerEmail" in payload and "project_manager_email" not in payload:
             payload["project_manager_email"] = payload.pop("projectManagerEmail")
         if "projectManagerFirstName" in payload and "project_manager_first_name" not in payload:
@@ -287,6 +302,7 @@ def normalize_intent_payload(payload: object) -> object:
             payload["register_full_payment"] = payload.pop("register_payment")
 
         payload.pop("project_name", None)
+        payload.pop("currency", None)
         for key in ("currency_code", "exchange_rate", "payment_exchange_rate"):
             payload.pop(key, None)
 
@@ -336,6 +352,9 @@ def normalize_intent_payload(payload: object) -> object:
         if moved_any or details:
             payload["details"] = details
 
+        normalize_travel_expense_entry_list(payload, "per_diem_entries")
+        normalize_travel_expense_entry_list(payload, "expense_entries")
+
         for alias in alias_map:
             payload.pop(alias, None)
         payload.pop("trip_dates", None)
@@ -355,6 +374,8 @@ def normalize_customer_payload(payload: dict[str, object]) -> None:
     alias_map = {
         "customer_name": "name",
         "company_name": "name",
+        "supplier_name": "name",
+        "vendor_name": "name",
         "customer_email": "email",
         "invoice_mail": "invoice_email",
         "invoiceEmail": "invoice_email",
@@ -404,6 +425,21 @@ def normalize_customer_payload(payload: dict[str, object]) -> None:
             postal_address["city"] = city
         payload["postal_address"] = postal_address
 
+    role = payload.get("role")
+    if isinstance(role, str) and role.strip().lower() in {"supplier", "vendor"}:
+        payload["is_supplier"] = True
+        payload["is_customer"] = False
+
+    supplier_hint = first_non_none(
+        payload.get("is_supplier"),
+        payload.get("isSupplier"),
+        payload.get("supplier"),
+        payload.get("vendor"),
+    )
+    if supplier_hint is True:
+        payload["is_supplier"] = True
+        payload["is_customer"] = False
+
 
 def normalize_employee_payload(payload: dict[str, object]) -> None:
     alias_map = {
@@ -419,11 +455,17 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         "positionCode": "position_code",
         "job_code": "position_code",
         "jobCode": "position_code",
+        "jobTitle": "job_title",
+        "title": "job_title",
         "salary": "annual_salary",
         "salary_amount": "annual_salary",
         "employmentPercent": "employment_percentage",
         "employment_rate": "employment_percentage",
         "employmentPercentage": "employment_percentage",
+        "dailyWorkingHours": "daily_working_hours",
+        "working_hours_per_day": "daily_working_hours",
+        "hours_per_day": "daily_working_hours",
+        "standard_daily_hours": "daily_working_hours",
         "startDate": "start_date",
     }
 
@@ -431,13 +473,12 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         if alias in payload and target not in payload:
             payload[target] = payload.pop(alias)
 
-    for key in ("annual_salary", "employment_percentage"):
+    for key in ("annual_salary", "employment_percentage", "daily_working_hours"):
         value = payload.get(key)
         if isinstance(value, str):
-            try:
-                payload[key] = float(value)
-            except ValueError:
-                continue
+            parsed_value = parse_numeric_string(value)
+            if parsed_value is not None:
+                payload[key] = parsed_value
 
     entitlement_template = payload.get("entitlement_template")
     if isinstance(entitlement_template, str):
@@ -477,7 +518,18 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
         if parsed_quantity is not None:
             payload["quantity"] = parsed_quantity
 
-    for key in ("product_id", "productId", "product_number", "productNumber"):
+    vat_percent = first_non_none(
+        payload.pop("vat_percent", None),
+        payload.pop("vatPercent", None),
+        payload.pop("vat_rate", None),
+        payload.pop("vatRate", None),
+    )
+    if "vat_type_id" not in payload:
+        vat_type_id = vat_percent_to_type_id(vat_percent)
+        if vat_type_id is not None:
+            payload["vat_type_id"] = vat_type_id
+
+    for key in ("product_id", "productId", "product_number", "productNumber", "currency"):
         payload.pop(key, None)
 
 
@@ -555,6 +607,8 @@ def normalize_voucher_posting_payload(payload: dict[str, object]) -> None:
         "posting_type": "entry_type",
         "vatTypeId": "vat_type_id",
         "vat_code_id": "vat_type_id",
+        "department": "department_name",
+        "departmentName": "department_name",
         "text": "description",
         "comment": "description",
     }
@@ -591,6 +645,13 @@ def normalize_voucher_posting_payload(payload: dict[str, object]) -> None:
             if parsed_value is None:
                 continue
             payload[key] = parsed_value if key == "amount" else int(parsed_value)
+
+    department_name = payload.get("department_name")
+    if isinstance(department_name, dict):
+        payload["department_name"] = first_non_none(
+            department_name.get("name"),
+            department_name.get("department_name"),
+        )
 
 
 def first_non_none(*values: object) -> object | None:
@@ -634,6 +695,64 @@ def parse_address_string(value: str) -> dict[str, object]:
         }
 
     return {"address_line1": cleaned}
+
+
+def split_person_name(value: str) -> tuple[str | None, str | None]:
+    parts = [part for part in value.strip().split() if part]
+    if not parts:
+        return None, None
+    if len(parts) == 1:
+        return parts[0], None
+    return parts[0], " ".join(parts[1:])
+
+
+def vat_percent_to_type_id(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        parsed = parse_numeric_string(value)
+        if parsed is None:
+            return None
+        value = parsed
+    if not isinstance(value, (int, float)):
+        return None
+    rounded = round(float(value), 2)
+    mapping = {
+        25.0: 3,
+        15.0: 31,
+        12.0: 32,
+        11.11: 311,
+        0.0: 5,
+    }
+    return mapping.get(rounded)
+
+
+def normalize_travel_expense_entry_list(payload: dict[str, object], key: str) -> None:
+    entries = payload.get(key)
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return
+
+    normalized_entries: list[dict[str, object]] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        normalized_entry = dict(entry)
+        for amount_key in (
+            "amount_per_day_currency",
+            "amount_currency",
+            "amount",
+            "number_of_days",
+        ):
+            value = normalized_entry.get(amount_key)
+            if isinstance(value, str):
+                parsed_value = parse_numeric_string(value)
+                if parsed_value is not None:
+                    normalized_entry[amount_key] = parsed_value
+        normalized_entries.append(normalized_entry)
+
+    payload[key] = normalized_entries
 
 
 def combine_execution_plans(plans: list[ExecutionPlan]) -> ExecutionPlan:

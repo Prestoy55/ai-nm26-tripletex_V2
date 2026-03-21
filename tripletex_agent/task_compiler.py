@@ -91,10 +91,14 @@ def compile_create_employee(
     comments = [intent.comments] if intent.comments else []
     if intent.position_code:
         comments.append(f"position_code={intent.position_code}")
+    if intent.job_title:
+        comments.append(f"job_title={intent.job_title}")
     if intent.annual_salary is not None:
         comments.append(f"annual_salary={intent.annual_salary}")
     if intent.employment_percentage is not None:
         comments.append(f"employment_percentage={intent.employment_percentage}")
+    if intent.daily_working_hours is not None:
+        comments.append(f"daily_working_hours={intent.daily_working_hours}")
     if intent.start_date:
         comments.append(f"start_date={intent.start_date}")
     if comments:
@@ -464,7 +468,7 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
             method="GET",
             path="/ledger/account",
             params={
-                "count": 1000,
+                "count": 10000,
                 "fields": "id,number,name,ledgerType,vatType(id),legalVatTypes(id),vatLocked",
             },
         )
@@ -490,6 +494,28 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
             )
         )
         supplier_reference = {"id": "{{create_voucher_supplier.value.id}}"}
+
+    department_action_ids: dict[str, str] = {}
+    for index, department_name in enumerate(
+        dict.fromkeys(
+            posting.department_name for posting in intent.postings if posting.department_name
+        ),
+        start=1,
+    ):
+        if not department_name:
+            continue
+        action_id = f"create_voucher_department_{index}"
+        department_action_ids[department_name] = action_id
+        actions.append(
+            TaskAction(
+                id=action_id,
+                description=f"Create department {department_name} for voucher dimensioning",
+                method="POST",
+                path="/department",
+                body={"name": department_name},
+                save_as=f"voucher_department_{index}",
+            )
+        )
 
     for account_number in unique_account_numbers:
         actions.append(
@@ -521,6 +547,7 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
                             row=index,
                             voucher_date=voucher_date,
                             supplier_reference=supplier_reference,
+                            department_action_ids=department_action_ids,
                         )
                         for index, posting in enumerate(intent.postings, start=1)
                     ],
@@ -538,6 +565,7 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
 
 
 def compile_create_travel_expense(intent: CreateTravelExpenseIntent) -> ExecutionPlan:
+    travel_details = compile_travel_expense_details(intent)
     actions = [
         TaskAction(
             id="get_departments_for_travel_expense",
@@ -567,7 +595,7 @@ def compile_create_travel_expense(intent: CreateTravelExpenseIntent) -> Executio
                 {
                     "title": intent.title,
                     "employee": {"id": "{{create_employee_for_travel_expense.value.id}}"},
-                    "travelDetails": compile_travel_expense_details(intent.details) if intent.details else None,
+                    "travelDetails": travel_details,
                 }
             ),
             save_as="travel_expense",
@@ -744,6 +772,11 @@ def compile_create_invoice(intent: CreateInvoiceIntent) -> ExecutionPlan:
     invoice_due_date = intent.invoice_due_date or invoice_date
     order_date = intent.order_date or invoice_date
     delivery_date = intent.delivery_date or invoice_date
+    prioritize_amounts_including_vat = all(
+        line.unit_price_including_vat_currency is not None
+        and line.unit_price_excluding_vat_currency is None
+        for line in intent.lines
+    )
 
     actions = [
         TaskAction(
@@ -764,6 +797,7 @@ def compile_create_invoice(intent: CreateInvoiceIntent) -> ExecutionPlan:
                     "customer": {"id": "{{create_customer.value.id}}"},
                     "orderDate": order_date,
                     "deliveryDate": delivery_date,
+                    "isPrioritizeAmountsIncludingVat": prioritize_amounts_including_vat,
                     "reference": intent.order_reference,
                     "orderLines": [compile_invoice_line(line) for line in intent.lines],
                 }
@@ -847,19 +881,30 @@ def compile_employee_body_for_travel_expense(intent: CreateTravelExpenseIntent) 
 
 
 def compile_travel_expense_details(details: object) -> dict[str, object] | None:
-    from tripletex_agent.task_intents import TravelExpenseDetailsIntent
+    from tripletex_agent.task_intents import CreateTravelExpenseIntent, TravelExpenseDetailsIntent
+
+    expense_summary: str | None = None
+    if isinstance(details, CreateTravelExpenseIntent):
+        intent = details
+        details = intent.details
+        expense_summary = summarize_travel_expense_entries(intent)
 
     if not isinstance(details, TravelExpenseDetailsIntent):
+        if expense_summary:
+            return {"departureDate": iso_today(), "returnDate": iso_today(), "purpose": expense_summary}
         return None
 
     departure_date = details.departure_date or iso_today()
+    purpose = details.purpose
+    if expense_summary:
+        purpose = f"{purpose} | {expense_summary}" if purpose else expense_summary
     return prune_none(
         {
             "departureDate": departure_date,
             "returnDate": details.return_date or departure_date,
             "departureFrom": details.departure_from,
             "destination": details.destination,
-            "purpose": details.purpose,
+            "purpose": purpose,
             "isDayTrip": details.is_day_trip,
             "isForeignTravel": details.is_foreign_travel,
             "isCompensationFromRates": details.is_compensation_from_rates,
@@ -889,6 +934,7 @@ def compile_voucher_posting(
     row: int,
     voucher_date: str,
     supplier_reference: dict[str, object] | None = None,
+    department_action_ids: dict[str, str] | None = None,
 ) -> dict[str, object]:
     signed_amount = posting.amount if posting.entry_type == "DEBIT" else -posting.amount
     return prune_none(
@@ -901,6 +947,9 @@ def compile_voucher_posting(
             "account": {"id": f"{{{{select_account_{posting.account_number}.id}}}}"},
             "supplier": supplier_reference
             if supplier_reference and is_likely_supplier_ledger_account(posting.account_number)
+            else None,
+            "department": {"id": f"{{{{{department_action_ids[posting.department_name]}.value.id}}}}"}
+            if department_action_ids and posting.department_name in department_action_ids
             else None,
             "vatType": {"id": posting.vat_type_id} if posting.vat_type_id is not None else None,
         }
@@ -922,6 +971,27 @@ def compile_address(address: AddressInput) -> dict[str, object]:
 
 def is_likely_supplier_ledger_account(account_number: int) -> bool:
     return 2400 <= account_number <= 2499
+
+
+def summarize_travel_expense_entries(intent: CreateTravelExpenseIntent) -> str | None:
+    segments: list[str] = []
+    for entry in intent.per_diem_entries:
+        if not isinstance(entry, dict):
+            continue
+        days = entry.get("number_of_days")
+        amount = entry.get("amount_per_day_currency")
+        if days and amount:
+            segments.append(f"Per diem: {days} days x {amount} NOK")
+    for entry in intent.expense_entries:
+        if not isinstance(entry, dict):
+            continue
+        description = entry.get("description") or "Expense"
+        amount = entry.get("amount_currency") or entry.get("amount")
+        if amount:
+            segments.append(f"{description}: {amount} NOK")
+    if not segments:
+        return None
+    return "; ".join(str(segment) for segment in segments)
 
 
 def iso_today() -> str:

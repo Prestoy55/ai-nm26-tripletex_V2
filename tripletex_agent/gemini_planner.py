@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from tripletex_agent.task_intents import (
     SUPPORTED_TASK_INTENT_ADAPTER,
     CreateInvoiceIntent,
     CreateProjectIntent,
+    CreateTravelExpenseIntent,
     CreateVoucherIntent,
     InvoiceCustomerIntent,
     VoucherPostingIntent,
@@ -109,6 +111,13 @@ class GeminiVertexPlanner(TaskPlanner):
         self.allow_beta_endpoints = allow_beta_endpoints
 
     def build_plan(self, prompt: str, attachments: list[PreparedAttachment]) -> ExecutionPlan:
+        deterministic_intent = build_deterministic_intent(prompt)
+        if deterministic_intent is not None:
+            return compile_task_intent(
+                deterministic_intent,
+                allow_beta_endpoints=self.allow_beta_endpoints,
+            )
+
         if self.api_key:
             client = genai.Client(
                 api_key=self.api_key,
@@ -390,6 +399,28 @@ def normalize_intent_payload(payload: object) -> object:
         expenses = payload.pop("expenses", None)
         if isinstance(expenses, dict):
             expenses = [expenses]
+
+        daily_allowance_days = payload.pop("daily_allowance_days", None)
+        if daily_allowance_days is None:
+            daily_allowance_days = payload.pop("per_diem_days", None)
+        daily_allowance_amount = payload.pop("daily_allowance_amount", None)
+        if daily_allowance_amount is None:
+            daily_allowance_amount = payload.pop("per_diem_amount", None)
+
+        if daily_allowance_days is not None or daily_allowance_amount is not None:
+            per_diem_entries = payload.get("per_diem_entries")
+            if not isinstance(per_diem_entries, list):
+                per_diem_entries = []
+            per_diem_entries.append(
+                prune_none_dict(
+                    {
+                        "number_of_days": daily_allowance_days,
+                        "amount_per_day_currency": daily_allowance_amount,
+                    }
+                )
+            )
+            payload["per_diem_entries"] = per_diem_entries
+
         if isinstance(expenses, list):
             per_diem_entries = payload.get("per_diem_entries")
             if not isinstance(per_diem_entries, list):
@@ -554,6 +585,7 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         "employment_rate": "employment_percentage",
         "employmentPercentage": "employment_percentage",
         "fte_percentage": "employment_percentage",
+        "position_percentage": "employment_percentage",
         "dailyWorkingHours": "daily_working_hours",
         "working_hours_per_day": "daily_working_hours",
         "hours_per_day": "daily_working_hours",
@@ -989,6 +1021,12 @@ def split_person_name(value: str) -> tuple[str | None, str | None]:
     return parts[0], " ".join(parts[1:])
 
 
+def normalize_text_for_match(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    without_accents = "".join(char for char in normalized if not unicodedata.combining(char))
+    return without_accents.lower()
+
+
 def vat_percent_to_type_id(value: object) -> int | None:
     if value is None:
         return None
@@ -1072,6 +1110,18 @@ def divide_amount(value: object, divisor: int) -> float | None:
         value = parse_numeric_string(value)
     if isinstance(value, (int, float)):
         return round(float(value) / divisor, 2)
+    return None
+
+
+def build_deterministic_intent(prompt: str) -> object | None:
+    for builder in (
+        build_supplier_invoice_fallback,
+        build_travel_expense_fallback,
+        build_fresh_invoice_state_fallback,
+    ):
+        intent = builder(prompt)
+        if intent is not None:
+            return intent
     return None
 
 
@@ -1186,8 +1236,202 @@ def build_project_fallback(prompt: str) -> CreateProjectIntent | None:
     )
 
 
+def build_supplier_invoice_fallback(prompt: str) -> CreateVoucherIntent | None:
+    lowered = normalize_text_for_match(prompt)
+    if not any(
+        token in lowered
+        for token in (
+            "supplier invoice",
+            "leverandørfaktura",
+            "leverandorfaktura",
+            "factura del proveedor",
+            "facture fournisseur",
+            "fatura do fornecedor",
+        )
+    ) and "from the supplier" not in lowered:
+        return None
+
+    supplier_match = re.search(
+        (
+            r"(?:from\s+the\s+supplier|from\s+supplier|fra\s+leverand[øo]ren|"
+            r"fra\s+leverand[øo]r|del\s+proveedor|du\s+fournisseur|do\s+fornecedor)\s+"
+            r"(?P<name>[^()]+?)\s*\((?:[^)]*?)(?:org(?:\.|anization)?(?:\s*no\.?|\s*nr\.?)?)\s*"
+            r"(?P<org>\d{9})\)"
+        ),
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    if not supplier_match:
+        return None
+
+    invoice_number_match = re.search(
+        r"(?:invoice|faktura|facture|factura|fatura)\s+([A-Z0-9][A-Z0-9\-\/]+)",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    account_match = re.search(
+        r"(?:account|konto|compte|cuenta)\s*\(?\s*(\d{4})\s*\)?",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    total_amount_match = re.search(
+        (
+            r"for\s+(\d[\d\s.,]*)\s*(?:NOK|kr)\b[^.]{0,60}"
+            r"(?:including\s+vat|inkl(?:usiv)?\s+mva|incl(?:uant|usive)?\s+tva|com\s+iva)"
+        ),
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    vat_match = re.search(r"(\d{1,2})\s*%", prompt)
+
+    if not invoice_number_match or not account_match or not total_amount_match or not vat_match:
+        return None
+
+    total_amount = parse_numeric_string(total_amount_match.group(1))
+    vat_percent = parse_numeric_string(vat_match.group(1))
+    if total_amount is None or vat_percent is None or vat_percent < 0:
+        return None
+
+    net_amount = round(total_amount / (1 + vat_percent / 100), 2)
+    vat_amount = round(total_amount - net_amount, 2)
+
+    supplier_name = supplier_match.group("name").strip(" ,:")
+    if not supplier_name:
+        return None
+
+    return CreateVoucherIntent(
+        task_type="create_voucher",
+        voucher_date=date.today().isoformat(),
+        description=f"Supplier invoice {invoice_number_match.group(1)} from {supplier_name}",
+        supplier_invoice_details={
+            "supplier_name": supplier_name,
+            "organization_number": supplier_match.group("org").strip(),
+            "invoice_number": invoice_number_match.group(1),
+            "total_amount_including_vat": total_amount,
+            "currency": "NOK",
+        },
+        postings=[
+            VoucherPostingIntent(
+                account_number=int(account_match.group(1)),
+                entry_type="DEBIT",
+                amount=net_amount,
+            ),
+            VoucherPostingIntent(
+                account_number=2710,
+                entry_type="DEBIT",
+                amount=vat_amount,
+            ),
+            VoucherPostingIntent(
+                account_number=2400,
+                entry_type="CREDIT",
+                amount=total_amount,
+            ),
+        ],
+    )
+
+
+def build_travel_expense_fallback(prompt: str) -> CreateTravelExpenseIntent | None:
+    lowered = normalize_text_for_match(prompt)
+    has_travel_markers = any(
+        token in lowered
+        for token in (
+            "travel expense",
+            "reisekost",
+            "despesa de viagem",
+            "frais de d",
+            "reisekosten",
+            "indemnit",
+            "daily allowance",
+            "per diem",
+        )
+    )
+    has_expense_markers = re.search(
+        r"(?:expenses?:|d.penses|utgifter|despesas)",
+        lowered,
+        flags=re.IGNORECASE,
+    )
+    if not has_travel_markers and not has_expense_markers:
+        return None
+
+    email_match = re.search(r"([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})", prompt, flags=re.IGNORECASE)
+    if not email_match:
+        return None
+
+    leading_text = prompt[: email_match.start()]
+    employee_name_match = re.search(
+        r"([A-ZÆØÅÀ-ÿ][A-Za-zÆØÅæøåÀ-ÿ'’\-]+(?:\s+[A-ZÆØÅÀ-ÿ][A-Za-zÆØÅæøåÀ-ÿ'’\-]+)+)\s*\($",
+        leading_text,
+    )
+    if not employee_name_match:
+        return None
+    first_name, last_name = split_person_name(employee_name_match.group(1))
+    if not first_name or not last_name:
+        return None
+
+    title = extract_invoice_line_description(prompt)
+    if not title:
+        return None
+
+    day_match = re.search(
+        r"(\d+)\s+(?:days?|dager?|jours?)\b[^.]{0,60}?(\d[\d\s.,]*)\s*(?:NOK|kr)\s*(?:/day|per day|pr dag|par jour)?",
+        lowered,
+        flags=re.IGNORECASE,
+    )
+    per_diem_entries: list[dict[str, object]] = []
+    if day_match:
+        number_of_days = int(day_match.group(1))
+        amount_per_day = parse_numeric_string(day_match.group(2))
+        if amount_per_day is not None:
+            per_diem_entries.append(
+                {
+                    "number_of_days": number_of_days,
+                    "amount_per_day_currency": amount_per_day,
+                }
+            )
+
+    expense_entries: list[dict[str, object]] = []
+    expense_section_match = re.search(
+        r"(?:expenses?|d.penses?|utgifter|despesas)\s*:\s*",
+        lowered,
+        flags=re.IGNORECASE,
+    )
+    if expense_section_match:
+        expense_section = prompt[expense_section_match.end() :]
+        for match in re.finditer(
+            r"([A-Za-zÆØÅæøåÀ-ÿ'’\-\s]+?)\s+(\d[\d\s.,]*)\s*(?:NOK|kr)\b",
+            expense_section,
+            flags=re.IGNORECASE,
+        ):
+            description = match.group(1).strip(" ,;:.")
+            description = re.sub(
+                r"^(?:and|og|et|e)\s+",
+                "",
+                description,
+                flags=re.IGNORECASE,
+            ).strip(" ,;:.")
+            amount = parse_numeric_string(match.group(2))
+            if not description or amount is None:
+                continue
+            expense_entries.append(
+                {
+                    "description": description,
+                    "amount_currency": amount,
+                }
+            )
+
+    return CreateTravelExpenseIntent(
+        task_type="create_travel_expense",
+        title=title,
+        employee_first_name=first_name,
+        employee_last_name=last_name,
+        employee_email=email_match.group(1),
+        per_diem_entries=per_diem_entries,
+        expense_entries=expense_entries,
+    )
+
+
 def build_fresh_invoice_state_fallback(prompt: str) -> CreateInvoiceIntent | None:
-    lowered = prompt.lower()
+    lowered = normalize_text_for_match(prompt)
     if not any(
         token in lowered
         for token in (
@@ -1205,15 +1449,15 @@ def build_fresh_invoice_state_fallback(prompt: str) -> CreateInvoiceIntent | Non
         for token in (
             "register full payment",
             "record full payment",
-            "registre le paiement intégral",
-            "enregistrez le paiement intégral",
+            "registre le paiement integral",
+            "enregistrez le paiement integral",
             "registre el pago completo",
             "registrer full betaling",
             "registrer full betaling",
             "registe o pagamento integral",
             "registe o pagamento total",
             "erfassen sie die zahlung",
-            "vollständige zahlung",
+            "vollstandige zahlung",
         )
     )
     reverse_payment = any(
@@ -1224,8 +1468,8 @@ def build_fresh_invoice_state_fallback(prompt: str) -> CreateInvoiceIntent | Non
             "reverser betalingen",
             "returned by the bank",
             "returnert av banken",
-            "retourné par la banque",
-            "zurückgebucht",
+            "retourne par la banque",
+            "zuruckgebucht",
             "devolvida pelo banco",
         )
     )

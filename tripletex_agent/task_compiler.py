@@ -475,7 +475,10 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
     ]
 
     customer_reference: dict[str, object] | None = None
-    if intent.customer_name or intent.customer_organization_number:
+    requires_customer_reference = any(
+        is_likely_customer_ledger_account(posting.account_number) for posting in intent.postings
+    )
+    if intent.customer_name or intent.customer_organization_number or requires_customer_reference:
         actions.append(
             TaskAction(
                 id="create_voucher_customer",
@@ -484,7 +487,12 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
                 path="/customer",
                 body=prune_none(
                     {
-                        "name": intent.customer_name or f"Customer {intent.customer_organization_number}",
+                        "name": intent.customer_name
+                        or (
+                            f"Customer {intent.customer_organization_number}"
+                            if intent.customer_organization_number
+                            else "Voucher customer"
+                        ),
                         "organizationNumber": intent.customer_organization_number,
                         "isCustomer": True,
                         "isSupplier": False,
@@ -694,29 +702,21 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
         )
         customer_reference = {"id": "{{create_project_customer.value.id}}"}
 
-    project_manager_reference: dict[str, object] | None = {"id": "{{find_project_manager.values.0.id}}"}
-    if any(
-        value
-        for value in (
-            intent.project_manager_email,
-            intent.project_manager_first_name,
-            intent.project_manager_last_name,
+    actions.append(
+        TaskAction(
+            id="find_project_manager",
+            description="Find an existing employee to assign as project manager",
+            method="GET",
+            path="/employee",
+            params={
+                "count": 1,
+                "fields": "id,firstName,lastName,email",
+            },
         )
-    ):
-        project_manager_reference = None
-    else:
-        actions.append(
-            TaskAction(
-                id="find_project_manager",
-                description="Find an employee to assign as project manager",
-                method="GET",
-                path="/employee",
-                params={
-                    "count": 1,
-                    "fields": "id,firstName,lastName,email",
-                },
-            )
-        )
+    )
+    project_manager_reference: dict[str, object] | None = {
+        "id": "{{find_project_manager.values.0.id}}"
+    }
 
     actions.append(
         TaskAction(
@@ -747,19 +747,16 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
     notes = ["Check created project fields"]
     if intent.customer:
         notes.insert(0, "Check created customer fields")
-    if (
-        project_manager_reference is None
-        and any(
-            value
-            for value in (
-                intent.project_manager_email,
-                intent.project_manager_first_name,
-                intent.project_manager_last_name,
-            )
+    if any(
+        value
+        for value in (
+            intent.project_manager_email,
+            intent.project_manager_first_name,
+            intent.project_manager_last_name,
         )
     ):
         notes.append(
-            "Project manager details were omitted from the API create step to avoid duplicate-user and permission failures"
+            "Used an existing account employee as project manager to avoid duplicate-user and permission failures"
         )
 
     return ExecutionPlan(
@@ -833,22 +830,15 @@ def compile_create_invoice(intent: CreateInvoiceIntent) -> ExecutionPlan:
         actions.extend(
             [
                 TaskAction(
-                    id="list_invoice_payment_types",
-                    description="List available invoice payment types",
+                    id="find_invoice_payment_type",
+                    description="Find the standard bank invoice payment type",
                     method="GET",
                     path="/invoice/paymentType",
-                    params={"fields": "id,name"},
-                ),
-                TaskAction(
-                    id="select_invoice_payment_type",
-                    description="Select the standard bank payment type",
-                    method="SELECT",
-                    path="",
-                    body={
-                        "source": "{{list_invoice_payment_types.values}}",
-                        "criteria": {"name": "Betalt til bank"},
+                    params={
+                        "name": "Betalt til bank",
+                        "count": 1,
+                        "fields": "id",
                     },
-                    save_as="payment_type",
                 ),
                 TaskAction(
                     id="register_invoice_payment",
@@ -857,7 +847,7 @@ def compile_create_invoice(intent: CreateInvoiceIntent) -> ExecutionPlan:
                     path="/invoice/{{create_invoice.value.id}}/:payment",
                     params={
                         "date": invoice_date,
-                        "paymentTypeId": "{{payment_type.id}}",
+                        "paymentTypeId": "{{find_invoice_payment_type.values.0.id}}",
                         "amount": "{{create_invoice.value.amount}}",
                     },
                 ),

@@ -580,6 +580,8 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         "positionCode": "position_code",
         "job_code": "position_code",
         "jobCode": "position_code",
+        "occupation_code": "position_code",
+        "occupationCode": "position_code",
         "position": "job_title",
         "jobTitle": "job_title",
         "title": "job_title",
@@ -820,6 +822,18 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
         )
         if isinstance(supplier_org, str) and "organization_number" not in supplier_invoice_details:
             supplier_invoice_details["organization_number"] = supplier_org
+
+    description = payload.get("description")
+    if isinstance(description, str):
+        supplier_from_description = re.search(
+            r"Supplier invoice\s+[A-Z0-9][A-Z0-9\-\/]*\s+from\s+(?P<name>.+?)(?:\s+for\b|$)",
+            description,
+            flags=re.IGNORECASE,
+        )
+        if supplier_from_description and "supplier_name" not in supplier_invoice_details:
+            supplier_name = supplier_from_description.group("name").strip(" ,:")
+            if supplier_name:
+                supplier_invoice_details["supplier_name"] = supplier_name
 
     payload.pop("voucher_type", None)
 

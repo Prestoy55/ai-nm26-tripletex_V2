@@ -843,12 +843,12 @@ def compile_create_invoice(intent: CreateInvoiceIntent) -> ExecutionPlan:
                 TaskAction(
                     id="register_invoice_payment",
                     description="Register full payment on the invoice",
-                    method="POST",
+                    method="PUT",
                     path="/invoice/{{create_invoice.value.id}}/:payment",
                     params={
-                        "date": invoice_date,
+                        "paymentDate": invoice_date,
                         "paymentTypeId": "{{find_invoice_payment_type.values.0.id}}",
-                        "amount": "{{create_invoice.value.amount}}",
+                        "paidAmount": "{{create_invoice.value.amount}}",
                     },
                 ),
             ]

@@ -43,6 +43,11 @@ def solve(
 ) -> SolveResponse:
     settings = get_settings()
     enforce_api_key(settings.endpoint_api_key, authorization)
+    logger.info(
+        "Received solve request: prompt=%r files=%d",
+        payload.prompt[:400],
+        len(payload.files),
+    )
 
     run_dir = create_run_dir(settings.runs_dir)
     attachments_dir = run_dir / "attachments"
@@ -58,6 +63,7 @@ def solve(
 
     try:
         plan = planner.build_plan(payload.prompt, prepared_attachments)
+        logger.info("Compiled plan: goal=%r actions=%d", plan.goal, len(plan.actions))
         write_json(run_dir / "plan.json", plan.model_dump(mode="json"))
 
         report = execute_plan(payload, plan, settings.tripletex_timeout_seconds)

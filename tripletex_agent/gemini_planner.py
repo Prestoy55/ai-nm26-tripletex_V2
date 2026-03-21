@@ -23,7 +23,8 @@ Operational rules:
 - The Tripletex account starts empty for each competition submission.
 - Return only JSON matching the supported task intent schema.
 - Never include markdown, commentary, or code fences.
-- If the prompt is outside the currently supported task families, return task_type=unsupported.
+- Only return task_type=unsupported as a last resort.
+- If you return task_type=unsupported, you must include a short non-empty reason string.
 
 Task guidance:
 - Prompts may arrive in Norwegian Bokmal, English, Spanish, Portuguese, Nynorsk, German, or French.
@@ -57,6 +58,8 @@ Important mapping rules:
 - If the user asks to create a project for a customer in an otherwise empty account, include the customer subobject so the compiler can create the customer first.
 - For invoices, extract customer details and invoice lines. The compiler will create customer, order, and invoice in that order.
 - For invoices, default send_to_customer=false unless the prompt explicitly says to send, email, dispatch, or deliver the invoice to the customer.
+- If the user asks to register payment for an invoice, still use create_invoice and set register_full_payment=true.
+- For customer creation, flat address fields like address, postal_code, and city should be mapped into postal_address.
 - Invoice lines must include description and quantity. Include either unit_price_excluding_vat_currency or unit_price_including_vat_currency when the prompt provides price information.
 - Use ISO dates in YYYY-MM-DD format.
 """.strip()
@@ -120,7 +123,10 @@ class GeminiVertexPlanner(TaskPlanner):
         try:
             intent = SUPPORTED_TASK_INTENT_ADAPTER.validate_python(normalized_intent)
         except Exception as exc:
-            raise PlanningError(f"Gemini planner returned invalid task intent JSON: {exc}") from exc
+            raise PlanningError(
+                "Gemini planner returned invalid task intent JSON: "
+                f"{exc}. Raw JSON: {truncate_text(text, limit=1200)}"
+            ) from exc
 
         return compile_task_intent(intent, allow_beta_endpoints=self.allow_beta_endpoints)
 
@@ -185,6 +191,9 @@ def normalize_intent_payload(payload: object) -> object:
         return payload
 
     task_type = payload.get("task_type")
+
+    if task_type == "unsupported" and not payload.get("reason"):
+        payload["reason"] = "Prompt did not map cleanly to a supported task family"
 
     if task_type == "create_customer":
         normalize_customer_payload(payload)

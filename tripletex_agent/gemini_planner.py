@@ -67,6 +67,7 @@ Important mapping rules:
 - If the prompt refers to an already existing invoice, overdue invoice, previous invoice, existing payment, bank reconciliation, or foreign-exchange settlement on an already sent invoice, prefer task_type=unsupported unless the task also includes explicit standalone journal entries that fit create_voucher.
 - Use create_invoice with is_credit_note=true when the prompt asks for a new full credit note and the reversed line items are explicitly given.
 - Use create_voucher for supplier invoices when the prompt explicitly provides the accounting treatment, such as expense account, VAT, and supplier ledger posting.
+- For supplier invoices, unless the prompt explicitly gives another liability account, use account 2400 for the supplier ledger credit posting.
 - Use create_voucher for explicit journal entries, accruals, depreciation, provisions, reminder-fee postings, and other bookkeeping tasks when the prompt already specifies the debit/credit account numbers and amounts.
 - create_voucher.postings must be balanced. Each posting must include account_number, entry_type (DEBIT or CREDIT), and amount.
 - If a prompt mixes supported journal entries with unsupported verification or analysis, still return the supported create_voucher tasks for the explicit postings and ignore the unsupported verification-only part.
@@ -228,6 +229,9 @@ def normalize_intent_payload(payload: object) -> object:
 
     if task_type == "create_customer":
         normalize_customer_payload(payload)
+
+    if task_type == "create_product":
+        normalize_product_payload(payload)
 
     if task_type == "create_project":
         if "project_name" in payload and "name" not in payload:
@@ -487,6 +491,45 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
             payload.pop("entitlement_template", None)
 
 
+def normalize_product_payload(payload: dict[str, object]) -> None:
+    alias_map = {
+        "product_number": "number",
+        "productNumber": "number",
+        "unit_price_excluding_vat_currency": "price_excluding_vat_currency",
+        "unitPriceExcludingVatCurrency": "price_excluding_vat_currency",
+        "unit_price_including_vat_currency": "price_including_vat_currency",
+        "unitPriceIncludingVatCurrency": "price_including_vat_currency",
+        "cost_price_excluding_vat_currency": "cost_excluding_vat_currency",
+        "costPriceExcludingVatCurrency": "cost_excluding_vat_currency",
+        "vat_rate_percent": "vat_rate_percent",
+        "vatPercent": "vat_rate_percent",
+        "vat_percent": "vat_rate_percent",
+    }
+
+    for alias, target in alias_map.items():
+        if alias in payload and target not in payload:
+            payload[target] = payload.pop(alias)
+
+    for key in (
+        "price_excluding_vat_currency",
+        "price_including_vat_currency",
+        "cost_excluding_vat_currency",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str):
+            parsed_value = parse_numeric_string(value)
+            if parsed_value is not None:
+                payload[key] = parsed_value
+
+    vat_percent = payload.pop("vat_rate_percent", None)
+    if "vat_type_id" not in payload:
+        vat_type_id = vat_percent_to_type_id(vat_percent)
+        if vat_type_id is not None:
+            payload["vat_type_id"] = vat_type_id
+
+    payload.pop("currency", None)
+
+
 def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
     alias_map = {
         "text": "description",
@@ -549,12 +592,34 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
             payload[target] = payload.pop(alias)
 
     supplier_invoice_details = payload.get("supplier_invoice_details")
+    if not isinstance(supplier_invoice_details, dict):
+        supplier_invoice_details = {}
+
+    supplier_aliases = {
+        "supplier_name": "supplier_name",
+        "vendor_name": "supplier_name",
+        "organization_number": "organization_number",
+        "org_number": "organization_number",
+        "supplier_address": "supplier_address",
+        "invoice_number": "invoice_number",
+        "external_id": "invoice_number",
+        "invoice_date": "invoice_date",
+        "due_date": "due_date",
+        "total_amount_including_vat": "total_amount_including_vat",
+        "currency": "currency",
+    }
+    for alias, target in supplier_aliases.items():
+        if alias in payload and target not in supplier_invoice_details:
+            supplier_invoice_details[target] = payload.pop(alias)
+
     if isinstance(supplier_invoice_details, dict):
         total_amount = supplier_invoice_details.get("total_amount_including_vat")
         if isinstance(total_amount, str):
             parsed_total_amount = parse_numeric_string(total_amount)
             if parsed_total_amount is not None:
                 supplier_invoice_details["total_amount_including_vat"] = parsed_total_amount
+        if supplier_invoice_details:
+            payload["supplier_invoice_details"] = supplier_invoice_details
 
     if "amount" in payload and "postings" not in payload:
         debit_account = first_non_none(
@@ -587,6 +652,20 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
     for posting in postings:
         if isinstance(posting, dict):
             normalize_voucher_posting_payload(posting)
+
+    if supplier_invoice_details:
+        has_supplier_ledger_posting = False
+        credit_postings: list[dict[str, object]] = []
+        for posting in postings:
+            if not isinstance(posting, dict):
+                continue
+            account_number = posting.get("account_number")
+            if isinstance(account_number, int) and 2400 <= account_number <= 2499:
+                has_supplier_ledger_posting = True
+            if posting.get("entry_type") == "CREDIT":
+                credit_postings.append(posting)
+        if not has_supplier_ledger_posting and len(credit_postings) == 1:
+            credit_postings[0]["account_number"] = 2400
 
 
 def normalize_voucher_posting_payload(payload: dict[str, object]) -> None:

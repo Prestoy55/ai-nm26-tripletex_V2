@@ -184,7 +184,35 @@ def normalize_intent_payload(payload: object) -> object:
     if not isinstance(payload, dict):
         return payload
 
-    if payload.get("task_type") == "create_travel_expense":
+    task_type = payload.get("task_type")
+
+    if task_type == "create_customer":
+        normalize_customer_payload(payload)
+
+    if task_type == "create_project":
+        if "project_name" in payload and "name" not in payload:
+            payload["name"] = payload.pop("project_name")
+        customer = payload.get("customer")
+        if isinstance(customer, dict):
+            normalize_customer_payload(customer)
+
+    if task_type == "create_invoice":
+        customer = payload.get("customer")
+        if isinstance(customer, dict):
+            normalize_customer_payload(customer)
+
+        if "invoice_lines" in payload and "lines" not in payload:
+            payload["lines"] = payload.pop("invoice_lines")
+        if "order_lines" in payload and "lines" not in payload:
+            payload["lines"] = payload.pop("order_lines")
+
+        lines = payload.get("lines")
+        if isinstance(lines, list):
+            for line in lines:
+                if isinstance(line, dict):
+                    normalize_invoice_line_payload(line)
+
+    if task_type == "create_travel_expense":
         detail_keys = {
             "departure_date",
             "return_date",
@@ -235,8 +263,42 @@ def normalize_intent_payload(payload: object) -> object:
         payload.pop("trip_dates", None)
         payload.pop("travel_dates", None)
 
-    if payload.get("task_type") == "delete_travel_expense":
+    if task_type == "delete_travel_expense":
         if "travel_expense_title" in payload and "title" not in payload:
             payload["title"] = payload.pop("travel_expense_title")
 
     return payload
+
+
+def normalize_customer_payload(payload: dict[str, object]) -> None:
+    alias_map = {
+        "customer_name": "name",
+        "company_name": "name",
+        "customer_email": "email",
+        "invoice_mail": "invoice_email",
+        "invoiceEmail": "invoice_email",
+        "phone": "phone_number",
+        "mobile": "phone_number_mobile",
+        "org_number": "organization_number",
+        "orgnr": "organization_number",
+        "org_no": "organization_number",
+    }
+
+    for alias, target in alias_map.items():
+        if alias in payload and target not in payload:
+            payload[target] = payload.pop(alias)
+
+
+def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
+    alias_map = {
+        "text": "description",
+        "name": "description",
+        "unit_price": "unit_price_excluding_vat_currency",
+        "unitPrice": "unit_price_excluding_vat_currency",
+        "price": "unit_price_excluding_vat_currency",
+        "qty": "quantity",
+    }
+
+    for alias, target in alias_map.items():
+        if alias in payload and target not in payload:
+            payload[target] = payload.pop(alias)

@@ -417,6 +417,8 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         "bankAccountNumber": "bank_account_number",
         "department": "department_name",
         "positionCode": "position_code",
+        "job_code": "position_code",
+        "jobCode": "position_code",
         "salary": "annual_salary",
         "salary_amount": "annual_salary",
         "employmentPercent": "employment_percentage",
@@ -436,6 +438,12 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
                 payload[key] = float(value)
             except ValueError:
                 continue
+
+    entitlement_template = payload.get("entitlement_template")
+    if isinstance(entitlement_template, str):
+        normalized_entitlement_template = entitlement_template.strip().upper()
+        if normalized_entitlement_template in {"EMPLOYEE", "STANDARD", "NO_ACCESS"}:
+            payload.pop("entitlement_template", None)
 
 
 def normalize_invoice_line_payload(payload: dict[str, object]) -> None:

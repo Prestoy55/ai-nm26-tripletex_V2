@@ -644,23 +644,61 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
         )
         customer_reference = {"id": "{{create_project_customer.value.id}}"}
 
-    actions.append(
-        TaskAction(
-            id="find_project_manager",
-            description="Find an employee to assign as project manager",
-            method="GET",
-            path="/employee",
-            params=prune_none(
-                {
-                    "email": intent.project_manager_email,
-                    "firstName": intent.project_manager_first_name,
-                    "lastName": intent.project_manager_last_name,
+    project_manager_reference = {"id": "{{find_project_manager.values.0.id}}"}
+    if any(
+        value
+        for value in (
+            intent.project_manager_email,
+            intent.project_manager_first_name,
+            intent.project_manager_last_name,
+        )
+    ):
+        actions.extend(
+            [
+                TaskAction(
+                    id="get_departments_for_project_manager",
+                    description="Fetch an active department to satisfy employee create requirements",
+                    method="GET",
+                    path="/department",
+                    params={
+                        "count": 1,
+                        "isInactive": False,
+                        "fields": "id,name",
+                    },
+                ),
+                TaskAction(
+                    id="create_project_manager",
+                    description="Create the project manager employee when the prompt provides a named manager",
+                    method="POST",
+                    path="/employee",
+                    body=prune_none(
+                        {
+                            "firstName": intent.project_manager_first_name or "Project",
+                            "lastName": intent.project_manager_last_name or "Manager",
+                            "email": intent.project_manager_email,
+                            "userType": "NO_ACCESS",
+                            "department": {"id": "{{get_departments_for_project_manager.values.0.id}}"},
+                        }
+                    ),
+                    save_as="project_manager",
+                ),
+            ]
+        )
+        project_manager_reference = {"id": "{{create_project_manager.value.id}}"}
+    else:
+        actions.append(
+            TaskAction(
+                id="find_project_manager",
+                description="Find an employee to assign as project manager",
+                method="GET",
+                path="/employee",
+                params={
                     "count": 1,
                     "fields": "id,firstName,lastName,email",
-                }
-            ),
+                },
+            )
         )
-    )
+
     actions.append(
         TaskAction(
             id="create_project",
@@ -680,7 +718,7 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
                     "isOffer": intent.is_offer,
                     "isFixedPrice": intent.is_fixed_price or intent.fixed_price_amount is not None,
                     "customer": customer_reference,
-                    "projectManager": {"id": "{{find_project_manager.values.0.id}}"},
+                    "projectManager": project_manager_reference,
                 }
             ),
             save_as="project",

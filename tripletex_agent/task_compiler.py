@@ -726,7 +726,7 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
                             "firstName": intent.project_manager_first_name or "Project",
                             "lastName": intent.project_manager_last_name or "Manager",
                             "email": intent.project_manager_email,
-                            "userType": "NO_ACCESS",
+                            "userType": "STANDARD" if intent.project_manager_email else "NO_ACCESS",
                             "department": {"id": "{{get_departments_for_project_manager.values.0.id}}"},
                         }
                     ),

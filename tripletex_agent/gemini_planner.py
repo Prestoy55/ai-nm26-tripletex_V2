@@ -612,7 +612,15 @@ def normalize_product_payload(payload: dict[str, object]) -> None:
 
     vat_percent = payload.pop("vat_rate_percent", None)
     if "vat_type_id" not in payload:
-        vat_type_id = vat_percent_to_type_id(vat_percent)
+        vat_type_id = first_non_none(
+            vat_percent_to_type_id(vat_percent),
+            vat_name_to_type_id(
+                first_non_none(
+                    payload.pop("vat_type", None),
+                    payload.pop("vatType", None),
+                )
+            ),
+        )
         if vat_type_id is not None:
             payload["vat_type_id"] = vat_type_id
 
@@ -657,7 +665,15 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
         payload.pop("vatRate", None),
     )
     if "vat_type_id" not in payload:
-        vat_type_id = vat_percent_to_type_id(vat_percent)
+        vat_type_id = first_non_none(
+            vat_percent_to_type_id(vat_percent),
+            vat_name_to_type_id(
+                first_non_none(
+                    payload.pop("vat_type", None),
+                    payload.pop("vatType", None),
+                )
+            ),
+        )
         if vat_type_id is not None:
             payload["vat_type_id"] = vat_type_id
 
@@ -689,6 +705,9 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
         "vendor_name": "supplier_name",
         "organization_number": "organization_number",
         "org_number": "organization_number",
+        "supplier_organization_number": "organization_number",
+        "supplier_org_number": "organization_number",
+        "supplier_orgnr": "organization_number",
         "supplier_address": "supplier_address",
         "invoice_number": "invoice_number",
         "external_id": "invoice_number",
@@ -700,6 +719,8 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
     for alias, target in supplier_aliases.items():
         if alias in payload and target not in supplier_invoice_details:
             supplier_invoice_details[target] = payload.pop(alias)
+
+    payload.pop("voucher_type", None)
 
     if isinstance(supplier_invoice_details, dict):
         total_amount = supplier_invoice_details.get("total_amount_including_vat")
@@ -923,6 +944,29 @@ def vat_percent_to_type_id(value: object) -> int | None:
         0.0: 5,
     }
     return mapping.get(rounded)
+
+
+def vat_name_to_type_id(value: object) -> int | None:
+    if not isinstance(value, str):
+        return None
+
+    normalized = re.sub(r"[^A-Z_]", "_", value.strip().upper())
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    mapping = {
+        "HIGH": 3,
+        "STANDARD": 3,
+        "FULL": 3,
+        "MEDIUM": 31,
+        "LOW": 31,
+        "REDUCED": 31,
+        "EXEMPT": 5,
+        "ZERO": 5,
+        "ZERO_RATED": 5,
+        "VAT_FREE": 5,
+        "NO_VAT": 5,
+        "NONE": 5,
+    }
+    return mapping.get(normalized)
 
 
 def normalize_travel_expense_entry_list(payload: dict[str, object], key: str) -> None:

@@ -368,6 +368,57 @@ def normalize_intent_payload(payload: object) -> object:
         if moved_any or details:
             payload["details"] = details
 
+        expenses = payload.pop("expenses", None)
+        if isinstance(expenses, dict):
+            expenses = [expenses]
+        if isinstance(expenses, list):
+            per_diem_entries = payload.get("per_diem_entries")
+            if not isinstance(per_diem_entries, list):
+                per_diem_entries = []
+            expense_entries = payload.get("expense_entries")
+            if not isinstance(expense_entries, list):
+                expense_entries = []
+
+            for entry in expenses:
+                if not isinstance(entry, dict):
+                    continue
+                entry_type = str(entry.get("type") or "").strip().lower()
+                amount = entry.get("amount")
+                description = entry.get("description")
+                currency = entry.get("currency")
+                if entry_type in {"daily_allowance", "per_diem", "diem"}:
+                    number_of_days = None
+                    if isinstance(description, str):
+                        days_match = re.search(r"(\d+)\s+days?", description, flags=re.IGNORECASE)
+                        if days_match:
+                            number_of_days = int(days_match.group(1))
+                    per_diem_entries.append(
+                        prune_none_dict(
+                            {
+                                "number_of_days": number_of_days,
+                                "amount_per_day_currency": amount if number_of_days in (None, 0) else divide_amount(amount, number_of_days),
+                                "amount_currency": amount,
+                                "currency": currency,
+                                "description": description,
+                            }
+                        )
+                    )
+                else:
+                    expense_entries.append(
+                        prune_none_dict(
+                            {
+                                "description": description,
+                                "amount_currency": amount,
+                                "currency": currency,
+                            }
+                        )
+                    )
+
+            if per_diem_entries:
+                payload["per_diem_entries"] = per_diem_entries
+            if expense_entries:
+                payload["expense_entries"] = expense_entries
+
         normalize_travel_expense_entry_list(payload, "per_diem_entries")
         normalize_travel_expense_entry_list(payload, "expense_entries")
 
@@ -880,6 +931,20 @@ def normalize_travel_expense_entry_list(payload: dict[str, object], key: str) ->
         normalized_entries.append(normalized_entry)
 
     payload[key] = normalized_entries
+
+
+def prune_none_dict(value: dict[str, object | None]) -> dict[str, object]:
+    return {key: item for key, item in value.items() if item is not None}
+
+
+def divide_amount(value: object, divisor: int) -> float | None:
+    if divisor <= 0:
+        return None
+    if isinstance(value, str):
+        value = parse_numeric_string(value)
+    if isinstance(value, (int, float)):
+        return round(float(value) / divisor, 2)
+    return None
 
 
 def build_explicit_voucher_fallback(prompt: str) -> CreateVoucherIntent | None:

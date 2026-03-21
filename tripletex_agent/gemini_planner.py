@@ -213,6 +213,9 @@ def normalize_intent_payload(payload: object) -> object:
     if task_type == "unsupported" and not payload.get("reason"):
         payload["reason"] = "Prompt did not map cleanly to a supported task family"
 
+    if task_type == "create_employee":
+        normalize_employee_payload(payload)
+
     if task_type == "create_customer":
         normalize_customer_payload(payload)
 
@@ -363,6 +366,39 @@ def normalize_customer_payload(payload: dict[str, object]) -> None:
         if city is not None and "city" not in postal_address:
             postal_address["city"] = city
         payload["postal_address"] = postal_address
+
+
+def normalize_employee_payload(payload: dict[str, object]) -> None:
+    alias_map = {
+        "firstName": "first_name",
+        "lastName": "last_name",
+        "dateOfBirth": "date_of_birth",
+        "birth_date": "date_of_birth",
+        "nationalIdentityNumber": "national_identity_number",
+        "ssn": "national_identity_number",
+        "social_security_number": "national_identity_number",
+        "bankAccountNumber": "bank_account_number",
+        "department": "department_name",
+        "positionCode": "position_code",
+        "salary": "annual_salary",
+        "salary_amount": "annual_salary",
+        "employmentPercent": "employment_percentage",
+        "employment_rate": "employment_percentage",
+        "employmentPercentage": "employment_percentage",
+        "startDate": "start_date",
+    }
+
+    for alias, target in alias_map.items():
+        if alias in payload and target not in payload:
+            payload[target] = payload.pop(alias)
+
+    for key in ("annual_salary", "employment_percentage"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            try:
+                payload[key] = float(value)
+            except ValueError:
+                continue
 
 
 def normalize_invoice_line_payload(payload: dict[str, object]) -> None:

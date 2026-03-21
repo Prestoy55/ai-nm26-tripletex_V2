@@ -70,16 +70,31 @@ def compile_create_employee(
         "firstName": intent.first_name,
         "lastName": intent.last_name,
     }
+    if intent.date_of_birth:
+        body["dateOfBirth"] = intent.date_of_birth
+    if intent.national_identity_number:
+        body["nationalIdentityNumber"] = intent.national_identity_number
     if intent.email:
         body["email"] = intent.email
+    if intent.bank_account_number:
+        body["bankAccountNumber"] = intent.bank_account_number
     if intent.phone_number_mobile:
         body["phoneNumberMobile"] = intent.phone_number_mobile
     if intent.phone_number_work:
         body["phoneNumberWork"] = intent.phone_number_work
     if intent.employee_number:
         body["employeeNumber"] = intent.employee_number
-    if intent.comments:
-        body["comments"] = intent.comments
+    comments = [intent.comments] if intent.comments else []
+    if intent.position_code:
+        comments.append(f"position_code={intent.position_code}")
+    if intent.annual_salary is not None:
+        comments.append(f"annual_salary={intent.annual_salary}")
+    if intent.employment_percentage is not None:
+        comments.append(f"employment_percentage={intent.employment_percentage}")
+    if intent.start_date:
+        comments.append(f"start_date={intent.start_date}")
+    if comments:
+        body["comments"] = " | ".join(comments)
     if intent.address:
         body["address"] = compile_address(intent.address)
 
@@ -94,30 +109,53 @@ def compile_create_employee(
     if user_type:
         body["userType"] = user_type
 
-    actions = [
-        TaskAction(
-            id="get_departments",
-            description="Fetch an active department to satisfy the employee create requirement",
-            method="GET",
-            path="/department",
-            params={
-                "count": 1,
-                "isInactive": False,
-                "fields": "id,name",
-            },
-        ),
-        TaskAction(
-            id="create_employee",
-            description="Create the employee",
-            method="POST",
-            path="/employee",
-            body={
-                **body,
-                "department": {"id": "{{get_departments.values.0.id}}"},
-            },
-            save_as="employee",
-        )
-    ]
+    if intent.department_name:
+        actions = [
+            TaskAction(
+                id="create_employee_department",
+                description="Create the requested department for the employee",
+                method="POST",
+                path="/department",
+                body={"name": intent.department_name},
+                save_as="department",
+            ),
+            TaskAction(
+                id="create_employee",
+                description="Create the employee",
+                method="POST",
+                path="/employee",
+                body={
+                    **body,
+                    "department": {"id": "{{create_employee_department.value.id}}"},
+                },
+                save_as="employee",
+            ),
+        ]
+    else:
+        actions = [
+            TaskAction(
+                id="get_departments",
+                description="Fetch an active department to satisfy the employee create requirement",
+                method="GET",
+                path="/department",
+                params={
+                    "count": 1,
+                    "isInactive": False,
+                    "fields": "id,name",
+                },
+            ),
+            TaskAction(
+                id="create_employee",
+                description="Create the employee",
+                method="POST",
+                path="/employee",
+                body={
+                    **body,
+                    "department": {"id": "{{get_departments.values.0.id}}"},
+                },
+                save_as="employee",
+            ),
+        ]
     verification_notes = ["Check created employee fields"]
     if requested_beta_entitlements and allow_beta_endpoints:
         actions.append(

@@ -28,10 +28,18 @@ class CreateEmployeeIntent(BaseModel):
     task_type: Literal["create_employee"]
     first_name: str
     last_name: str
+    date_of_birth: str | None = None
+    national_identity_number: str | None = None
     email: str | None = None
+    bank_account_number: str | None = None
     phone_number_mobile: str | None = None
     phone_number_work: str | None = None
     employee_number: str | None = None
+    department_name: str | None = None
+    position_code: str | None = None
+    annual_salary: float | None = None
+    employment_percentage: float | None = None
+    start_date: str | None = None
     user_type: Literal["STANDARD", "EXTENDED", "NO_ACCESS"] | None = None
     entitlement_template: (
         Literal[

@@ -1,0 +1,1 @@
+"""Tripletex competition agent package."""

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-nm26-tripletex"
+version = "0.1.0"
+description = "Tripletex competition agent scaffold for NM i AI 2026"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "fastapi>=0.115,<1",
+  "google-genai>=1.68,<2",
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "pypdf>=5.4,<6",
+  "uvicorn>=0.34,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["tripletex_agent*"]

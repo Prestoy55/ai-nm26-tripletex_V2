@@ -1,0 +1,17 @@
+runtime: custom
+env: flex
+
+manual_scaling:
+  instances: 1
+
+resources:
+  cpu: 1
+  memory_gb: 1
+  disk_size_gb: 10
+
+env_variables:
+  TRIPLETEX_AGENT_PLANNER_MODE: gemini_vertex
+  GOOGLE_CLOUD_LOCATION: global
+  TRIPLETEX_AGENT_GEMINI_MODEL: gemini-2.5-flash
+  TRIPLETEX_AGENT_ALLOW_BETA_ENDPOINTS: "false"
+  TRIPLETEX_AGENT_RUNS_DIR: /tmp/tripletex-runs

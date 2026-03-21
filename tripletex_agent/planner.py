@@ -53,6 +53,7 @@ def build_planner(mode: str) -> TaskPlanner:
 
         settings = get_settings()
         return GeminiVertexPlanner(
+            api_key=settings.gemini_api_key,
             project=settings.google_cloud_project,
             location=settings.google_cloud_location,
             model=settings.gemini_model,

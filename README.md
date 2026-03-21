@@ -209,6 +209,7 @@ Useful environment variables:
 - `TRIPLETEX_AGENT_API_KEY`: optional Bearer token required by our endpoint
 - `TRIPLETEX_AGENT_PLANNER_MODE`: `stub`, `json_prompt`, or `gemini_vertex`
 - `TRIPLETEX_AGENT_ALLOW_BETA_ENDPOINTS`: defaults to `false`; set to `true` only for sandbox experiments that intentionally use beta Tripletex endpoints
+- `GEMINI_API_KEY`: optional Gemini Developer API key; when set, the planner uses the public Gemini API instead of Vertex AI
 - `TRIPLETEX_AGENT_RUNS_DIR`: defaults to `.work/runs`
 - `TRIPLETEX_AGENT_TIMEOUT_SECONDS`: per-call timeout for Tripletex API requests
 - `GOOGLE_CLOUD_PROJECT`: GCP project for Vertex AI
@@ -236,3 +237,57 @@ Recommended follow-up hardening:
 - require an endpoint Bearer token with `TRIPLETEX_AGENT_API_KEY`
 - deploy with a dedicated user-managed service account
 - grant only the Vertex AI permissions needed by the service
+
+## App Engine Fallback
+
+If Cloud Run keeps failing at the public routing layer, the clean GCP-native fallback is App Engine flexible. This repo now includes [app.yaml](/C:/Users/olefo/Documents/GitHub/ai-nm26-tripletex_V2/app.yaml), which reuses the existing [Dockerfile](/C:/Users/olefo/Documents/GitHub/ai-nm26-tripletex_V2/Dockerfile) as a custom runtime and gives a public HTTPS endpoint without `run.app` routing.
+
+Why this is the most practical GCP fallback:
+
+- public HTTPS endpoint is built in
+- existing Dockerfile can be reused
+- no custom domain or certificate setup is needed
+- keeps the deployment fully inside GCP
+
+Minimal deploy flow:
+
+```bash
+gcloud app create --region=europe-west
+gcloud app deploy
+```
+
+After deploy, the public endpoints should be:
+
+- `/`
+- `/healthz`
+- `/solve`
+
+If Vertex AI access is blocked in the App Engine runtime, the secondary fallback is to set `GEMINI_API_KEY` and redeploy.
+
+## Vercel Fallback
+
+If Cloud Run routing keeps wasting time, this repo now also supports Vercel with a root ASGI entrypoint in [app.py](/C:/Users/olefo/Documents/GitHub/ai-nm26-tripletex_V2/app.py).
+
+Why this is viable:
+
+- Vercel documents FastAPI support for Python functions
+- Vercel documents Python function entrypoints such as `app.py`
+- current Vercel limits document a 300-second default duration on Hobby with Fluid compute enabled by default, so this fallback does not need a custom `vercel.json`
+
+Minimal deploy flow:
+
+```bash
+vercel deploy --prod -y
+```
+
+Required environment variables in the Vercel project:
+
+- `TRIPLETEX_AGENT_PLANNER_MODE=gemini_vertex`
+- `GEMINI_API_KEY=YOUR_GEMINI_API_KEY`
+- `TRIPLETEX_AGENT_GEMINI_MODEL=gemini-2.5-flash`
+- `TRIPLETEX_AGENT_ALLOW_BETA_ENDPOINTS=false`
+
+The deployed public endpoints should be:
+
+- `/healthz`
+- `/solve`

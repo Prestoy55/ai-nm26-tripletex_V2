@@ -13,6 +13,7 @@ class Settings:
     endpoint_api_key: str | None
     planner_mode: str
     allow_beta_endpoints: bool
+    gemini_api_key: str | None
     google_cloud_project: str | None
     google_cloud_location: str
     gemini_model: str
@@ -30,6 +31,7 @@ def get_settings() -> Settings:
         endpoint_api_key=os.getenv("TRIPLETEX_AGENT_API_KEY"),
         planner_mode=os.getenv("TRIPLETEX_AGENT_PLANNER_MODE", "stub").strip().lower(),
         allow_beta_endpoints=parse_bool_env("TRIPLETEX_AGENT_ALLOW_BETA_ENDPOINTS", default=False),
+        gemini_api_key=os.getenv("GEMINI_API_KEY"),
         google_cloud_project=resolve_google_cloud_project(),
         google_cloud_location=os.getenv("GOOGLE_CLOUD_LOCATION", "global").strip(),
         gemini_model=os.getenv("TRIPLETEX_AGENT_GEMINI_MODEL", "gemini-2.5-flash").strip(),

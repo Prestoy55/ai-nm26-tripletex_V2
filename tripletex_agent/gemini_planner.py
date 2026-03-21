@@ -66,6 +66,7 @@ class GeminiVertexPlanner(TaskPlanner):
     def __init__(
         self,
         *,
+        api_key: str | None,
         project: str | None,
         location: str,
         model: str,
@@ -73,6 +74,7 @@ class GeminiVertexPlanner(TaskPlanner):
         attachment_text_chars: int,
         allow_beta_endpoints: bool,
     ) -> None:
+        self.api_key = api_key
         self.project = project
         self.location = location
         self.model = model
@@ -81,12 +83,18 @@ class GeminiVertexPlanner(TaskPlanner):
         self.allow_beta_endpoints = allow_beta_endpoints
 
     def build_plan(self, prompt: str, attachments: list[PreparedAttachment]) -> ExecutionPlan:
-        client = genai.Client(
-            vertexai=True,
-            project=self.project,
-            location=self.location,
-            http_options=types.HttpOptions(api_version="v1", timeout=60_000),
-        )
+        if self.api_key:
+            client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(timeout=60_000),
+            )
+        else:
+            client = genai.Client(
+                vertexai=True,
+                project=self.project,
+                location=self.location,
+                http_options=types.HttpOptions(api_version="v1", timeout=60_000),
+            )
         contents = self._build_contents(prompt, attachments)
         response = client.models.generate_content(
             model=self.model,

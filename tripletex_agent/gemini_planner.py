@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from pathlib import Path
 
@@ -11,6 +12,8 @@ from tripletex_agent.models import ExecutionPlan, PreparedAttachment
 from tripletex_agent.planning_base import PlanningError, TaskPlanner
 from tripletex_agent.task_compiler import compile_task_intent
 from tripletex_agent.task_intents import SUPPORTED_TASK_INTENT_ADAPTER
+
+_TEMPLATE = re.compile(r"{{\s*([^{}]+?)\s*}}")
 
 SYSTEM_INSTRUCTION = """
 You are the planning layer for a Tripletex accounting agent in the Norwegian AI Championship 2026.
@@ -121,6 +124,18 @@ class GeminiVertexPlanner(TaskPlanner):
         normalized_intent = normalize_intent_payload(raw_intent)
 
         try:
+            if isinstance(normalized_intent, list):
+                intents = [
+                    SUPPORTED_TASK_INTENT_ADAPTER.validate_python(item)
+                    for item in normalized_intent
+                ]
+                return combine_execution_plans(
+                    [
+                        compile_task_intent(intent, allow_beta_endpoints=self.allow_beta_endpoints)
+                        for intent in intents
+                    ]
+                )
+
             intent = SUPPORTED_TASK_INTENT_ADAPTER.validate_python(normalized_intent)
         except Exception as exc:
             raise PlanningError(
@@ -187,6 +202,9 @@ def should_inline_attachment(mime_type: str, size_bytes: int, *, max_attachment_
 
 
 def normalize_intent_payload(payload: object) -> object:
+    if isinstance(payload, list):
+        return [normalize_intent_payload(item) for item in payload]
+
     if not isinstance(payload, dict):
         return payload
 
@@ -377,3 +395,79 @@ def first_non_none(*values: object) -> object | None:
         if value is not None:
             return value
     return None
+
+
+def combine_execution_plans(plans: list[ExecutionPlan]) -> ExecutionPlan:
+    if not plans:
+        raise PlanningError("Gemini planner returned an empty task list")
+
+    combined_actions = []
+    combined_notes: list[str] = []
+    combined_goals: list[str] = []
+    for index, plan in enumerate(plans, start=1):
+        prefix = f"batch{index}_"
+        renamed_plan = rename_execution_plan(plan, prefix)
+        combined_actions.extend(renamed_plan.actions)
+        combined_notes.extend(renamed_plan.verification_notes)
+        combined_goals.append(plan.goal)
+
+    return ExecutionPlan(
+        goal="; ".join(combined_goals),
+        actions=combined_actions,
+        verification_notes=dedupe_preserve_order(combined_notes),
+    )
+
+
+def rename_execution_plan(plan: ExecutionPlan, prefix: str) -> ExecutionPlan:
+    mapping: dict[str, str] = {}
+    for action in plan.actions:
+        mapping[action.id] = f"{prefix}{action.id}"
+        if action.save_as:
+            mapping[action.save_as] = f"{prefix}{action.save_as}"
+
+    renamed_actions = []
+    for action in plan.actions:
+        renamed_actions.append(
+            action.model_copy(
+                update={
+                    "id": mapping[action.id],
+                    "path": rename_templates(action.path, mapping),
+                    "params": rename_templates(action.params, mapping),
+                    "body": rename_templates(action.body, mapping),
+                    "save_as": mapping.get(action.save_as) if action.save_as else None,
+                }
+            )
+        )
+
+    return plan.model_copy(update={"actions": renamed_actions})
+
+
+def rename_templates(value: object, mapping: dict[str, str]) -> object:
+    if isinstance(value, str):
+        def replace_match(match: re.Match[str]) -> str:
+            reference = match.group(1)
+            parts = reference.split(".", 1)
+            head = mapping.get(parts[0], parts[0])
+            new_reference = head if len(parts) == 1 else f"{head}.{parts[1]}"
+            return "{{" + new_reference + "}}"
+
+        return _TEMPLATE.sub(replace_match, value)
+
+    if isinstance(value, list):
+        return [rename_templates(item, mapping) for item in value]
+
+    if isinstance(value, dict):
+        return {key: rename_templates(item, mapping) for key, item in value.items()}
+
+    return value
+
+
+def dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result

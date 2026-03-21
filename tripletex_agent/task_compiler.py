@@ -650,10 +650,15 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
             description="Find an employee to assign as project manager",
             method="GET",
             path="/employee",
-            params={
-                "count": 1,
-                "fields": "id,firstName,lastName",
-            },
+            params=prune_none(
+                {
+                    "email": intent.project_manager_email,
+                    "firstName": intent.project_manager_first_name,
+                    "lastName": intent.project_manager_last_name,
+                    "count": 1,
+                    "fields": "id,firstName,lastName,email",
+                }
+            ),
         )
     )
     actions.append(
@@ -673,7 +678,7 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
                     "invoiceComment": intent.invoice_comment,
                     "isInternal": intent.is_internal,
                     "isOffer": intent.is_offer,
-                    "isFixedPrice": intent.is_fixed_price,
+                    "isFixedPrice": intent.is_fixed_price or intent.fixed_price_amount is not None,
                     "customer": customer_reference,
                     "projectManager": {"id": "{{find_project_manager.values.0.id}}"},
                 }

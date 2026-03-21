@@ -117,3 +117,6 @@ class ExecutionReport(BaseModel):
     api_calls: int
     action_results: list[ActionResult] = Field(default_factory=list)
     saved_context: dict[str, Any] = Field(default_factory=dict)
+    failed_action_id: str | None = None
+    error_type: str | None = None
+    error_message: str | None = None

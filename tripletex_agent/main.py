@@ -13,7 +13,7 @@ from tripletex_agent.config import get_settings
 from tripletex_agent.executor import PlanExecutionError, PlanExecutor
 from tripletex_agent.models import ExecutionPlan, ExecutionReport, SolveRequest, SolveResponse
 from tripletex_agent.planner import PlanningError, build_planner
-from tripletex_agent.tripletex_client import TripletexApiError, TripletexClient
+from tripletex_agent.tripletex_client import TripletexClient
 
 logger = logging.getLogger("tripletex_agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -75,13 +75,6 @@ def solve(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
-    except (PlanExecutionError, TripletexApiError) as exc:
-        persist_error(run_dir, exc, phase="execution")
-        logger.warning("Execution failed: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
     except Exception as exc:
         persist_error(run_dir, exc, phase="unexpected")
         logger.exception("Unhandled error while solving Tripletex task")
@@ -89,6 +82,15 @@ def solve(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unhandled server error",
         ) from exc
+
+    if report.error_message:
+        persist_execution_report_error(run_dir, report)
+        logger.warning(
+            "Execution stopped early after %d successful actions at %s: %s",
+            len(report.action_results),
+            report.failed_action_id,
+            report.error_message,
+        )
 
     return SolveResponse(status="completed")
 
@@ -128,9 +130,17 @@ def persist_error(run_dir: Path, exc: Exception, *, phase: str) -> None:
         "error_type": type(exc).__name__,
         "message": str(exc),
     }
-    if isinstance(exc, TripletexApiError):
-        payload["status_code"] = exc.status_code
-        payload["response_body"] = exc.response_body
+    write_json(run_dir / "error.json", payload)
+
+
+def persist_execution_report_error(run_dir: Path, report: ExecutionReport) -> None:
+    payload = {
+        "phase": "execution",
+        "error_type": report.error_type,
+        "message": report.error_message,
+        "failed_action_id": report.failed_action_id,
+        "successful_actions": len(report.action_results),
+    }
     write_json(run_dir / "error.json", payload)
 
 

@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from tripletex_agent.models import ActionResult, ExecutionPlan, ExecutionReport
-from tripletex_agent.tripletex_client import TripletexClient
+from tripletex_agent.tripletex_client import TripletexApiError, TripletexClient
 
 _TEMPLATE = re.compile(r"{{\s*([^{}]+?)\s*}}")
 
@@ -22,49 +22,59 @@ class PlanExecutor:
         results: list[ActionResult] = []
 
         for action in plan.actions:
-            resolved_path = resolve_templates(action.path, context)
-            resolved_params = compact_payload(resolve_templates(action.params, context))
-            resolved_body = compact_payload(resolve_templates(action.body, context))
+            try:
+                resolved_path = resolve_templates(action.path, context)
+                resolved_params = compact_payload(resolve_templates(action.params, context))
+                resolved_body = compact_payload(resolve_templates(action.body, context))
 
-            if action.method == "SELECT":
-                response_payload = run_select_action(action.id, resolved_body)
+                if action.method == "SELECT":
+                    response_payload = run_select_action(action.id, resolved_body)
+                    context[action.id] = response_payload
+                    if action.save_as:
+                        context[action.save_as] = response_payload
+                    results.append(
+                        ActionResult(
+                            action_id=action.id,
+                            method=action.method,
+                            path="(local select)",
+                            status_code=0,
+                            response=response_payload,
+                        )
+                    )
+                    continue
+
+                if not isinstance(resolved_path, str):
+                    raise PlanExecutionError(f"Resolved path for action {action.id} must be a string")
+
+                status_code, response_payload = self.client.request(
+                    action.method,
+                    resolved_path,
+                    params=resolved_params,
+                    json_body=resolved_body,
+                )
+
                 context[action.id] = response_payload
                 if action.save_as:
                     context[action.save_as] = response_payload
+
                 results.append(
                     ActionResult(
                         action_id=action.id,
                         method=action.method,
-                        path="(local select)",
-                        status_code=0,
+                        path=resolved_path,
+                        status_code=status_code,
                         response=response_payload,
                     )
                 )
-                continue
-
-            if not isinstance(resolved_path, str):
-                raise PlanExecutionError(f"Resolved path for action {action.id} must be a string")
-
-            status_code, response_payload = self.client.request(
-                action.method,
-                resolved_path,
-                params=resolved_params,
-                json_body=resolved_body,
-            )
-
-            context[action.id] = response_payload
-            if action.save_as:
-                context[action.save_as] = response_payload
-
-            results.append(
-                ActionResult(
-                    action_id=action.id,
-                    method=action.method,
-                    path=resolved_path,
-                    status_code=status_code,
-                    response=response_payload,
+            except (PlanExecutionError, TripletexApiError) as exc:
+                return ExecutionReport(
+                    api_calls=self.client.calls_made,
+                    action_results=results,
+                    saved_context=context,
+                    failed_action_id=action.id,
+                    error_type=type(exc).__name__,
+                    error_message=str(exc),
                 )
-            )
 
         return ExecutionReport(
             api_calls=self.client.calls_made,

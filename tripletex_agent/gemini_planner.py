@@ -231,6 +231,17 @@ def normalize_intent_payload(payload: object) -> object:
     if task_type == "create_project":
         if "project_name" in payload and "name" not in payload:
             payload["name"] = payload.pop("project_name")
+        if "projectManagerEmail" in payload and "project_manager_email" not in payload:
+            payload["project_manager_email"] = payload.pop("projectManagerEmail")
+        if "projectManagerFirstName" in payload and "project_manager_first_name" not in payload:
+            payload["project_manager_first_name"] = payload.pop("projectManagerFirstName")
+        if "projectManagerLastName" in payload and "project_manager_last_name" not in payload:
+            payload["project_manager_last_name"] = payload.pop("projectManagerLastName")
+        fixed_price_amount = payload.get("fixed_price_amount")
+        if isinstance(fixed_price_amount, str):
+            parsed_fixed_price_amount = parse_numeric_string(fixed_price_amount)
+            if parsed_fixed_price_amount is not None:
+                payload["fixed_price_amount"] = parsed_fixed_price_amount
         customer = payload.get("customer")
         if isinstance(customer, dict):
             normalize_customer_payload(customer)
@@ -275,6 +286,7 @@ def normalize_intent_payload(payload: object) -> object:
         if "register_payment" in payload and "register_full_payment" not in payload:
             payload["register_full_payment"] = payload.pop("register_payment")
 
+        payload.pop("project_name", None)
         for key in ("currency_code", "exchange_rate", "payment_exchange_rate"):
             payload.pop(key, None)
 
@@ -372,6 +384,13 @@ def normalize_customer_payload(payload: dict[str, object]) -> None:
         payload.pop("city", None),
         payload.pop("town", None),
     )
+    raw_postal_address = payload.get("postal_address")
+    if isinstance(raw_postal_address, str):
+        payload["postal_address"] = parse_address_string(raw_postal_address)
+
+    raw_physical_address = payload.get("physical_address")
+    if isinstance(raw_physical_address, str):
+        payload["physical_address"] = parse_address_string(raw_physical_address)
 
     if any(value is not None for value in (address_line1, postal_code, city)):
         postal_address = payload.get("postal_address")
@@ -591,6 +610,22 @@ def parse_numeric_string(value: str) -> float | None:
         return float(cleaned)
     except ValueError:
         return None
+
+
+def parse_address_string(value: str) -> dict[str, object]:
+    cleaned = value.strip()
+    if not cleaned:
+        return {"address_line1": value}
+
+    match = re.match(r"^(?P<address>.+?),\s*(?P<postal>\d{4})\s+(?P<city>.+)$", cleaned)
+    if match:
+        return {
+            "address_line1": match.group("address").strip(),
+            "postal_code": match.group("postal").strip(),
+            "city": match.group("city").strip(),
+        }
+
+    return {"address_line1": cleaned}
 
 
 def combine_execution_plans(plans: list[ExecutionPlan]) -> ExecutionPlan:

@@ -228,6 +228,10 @@ class CreateProjectIntent(BaseModel):
     is_internal: bool | None = None
     is_offer: bool | None = None
     is_fixed_price: bool | None = None
+    fixed_price_amount: float | None = None
+    project_manager_email: str | None = None
+    project_manager_first_name: str | None = None
+    project_manager_last_name: str | None = None
     customer: InvoiceCustomerIntent | None = None
 
 

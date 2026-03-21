@@ -13,6 +13,7 @@ class Settings:
     endpoint_api_key: str | None
     planner_mode: str
     allow_beta_endpoints: bool
+    app_revision: str
     gemini_api_key: str | None
     google_cloud_project: str | None
     google_cloud_location: str
@@ -31,6 +32,7 @@ def get_settings() -> Settings:
         endpoint_api_key=os.getenv("TRIPLETEX_AGENT_API_KEY"),
         planner_mode=os.getenv("TRIPLETEX_AGENT_PLANNER_MODE", "stub").strip().lower(),
         allow_beta_endpoints=parse_bool_env("TRIPLETEX_AGENT_ALLOW_BETA_ENDPOINTS", default=False),
+        app_revision=resolve_app_revision(),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
         google_cloud_project=resolve_google_cloud_project(),
         google_cloud_location=os.getenv("GOOGLE_CLOUD_LOCATION", "global").strip(),
@@ -61,6 +63,14 @@ def resolve_google_cloud_project() -> str | None:
         return None
 
     return discovered_project
+
+
+def resolve_app_revision() -> str:
+    for env_name in ("TRIPLETEX_AGENT_REVISION", "K_REVISION", "GIT_SHA", "COMMIT_SHA", "REVISION"):
+        value = os.getenv(env_name)
+        if value:
+            return value.strip()
+    return "dev"
 
 
 def parse_bool_env(name: str, *, default: bool) -> bool:

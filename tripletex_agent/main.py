@@ -21,19 +21,34 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 app = FastAPI(title="AI-NM26 Tripletex Agent", version="0.1.0")
 
 
+@app.on_event("startup")
+def log_startup_metadata() -> None:
+    settings = get_settings()
+    logger.info(
+        "Application startup: revision=%s planner_mode=%s beta_endpoints=%s timeout_seconds=%s",
+        settings.app_revision,
+        settings.planner_mode,
+        settings.allow_beta_endpoints,
+        settings.tripletex_timeout_seconds,
+    )
+
+
 @app.get("/")
 def root() -> dict[str, str]:
-    return {"status": "ok"}
+    settings = get_settings()
+    return {"status": "ok", "revision": settings.app_revision}
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    settings = get_settings()
+    return {"status": "ok", "revision": settings.app_revision}
 
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    return {"status": "ok"}
+    settings = get_settings()
+    return {"status": "ok", "revision": settings.app_revision}
 
 
 @app.post("/solve", response_model=SolveResponse)
@@ -43,16 +58,27 @@ def solve(
 ) -> SolveResponse:
     settings = get_settings()
     enforce_api_key(settings.endpoint_api_key, authorization)
+    run_dir = create_run_dir(settings.runs_dir)
+    run_id = run_dir.name
     logger.info(
-        "Received solve request: prompt=%r files=%d",
+        "Received solve request: run_id=%s revision=%s prompt=%r files=%d",
+        run_id,
+        settings.app_revision,
         payload.prompt[:400],
         len(payload.files),
     )
-
-    run_dir = create_run_dir(settings.runs_dir)
     attachments_dir = run_dir / "attachments"
     prepared_attachments = materialize_attachments(payload.files, attachments_dir)
 
+    write_json(
+        run_dir / "metadata.json",
+        {
+            "run_id": run_id,
+            "revision": settings.app_revision,
+            "planner_mode": settings.planner_mode,
+            "allow_beta_endpoints": settings.allow_beta_endpoints,
+        },
+    )
     write_json(run_dir / "request.json", payload.redacted_for_disk())
     write_json(
         run_dir / "attachments.json",
@@ -63,21 +89,36 @@ def solve(
 
     try:
         plan = planner.build_plan(payload.prompt, prepared_attachments)
-        logger.info("Compiled plan: goal=%r actions=%d", plan.goal, len(plan.actions))
+        logger.info(
+            "Compiled plan: run_id=%s revision=%s goal=%r actions=%d",
+            run_id,
+            settings.app_revision,
+            plan.goal,
+            len(plan.actions),
+        )
         write_json(run_dir / "plan.json", plan.model_dump(mode="json"))
 
         report = execute_plan(payload, plan, settings.tripletex_timeout_seconds)
         write_json(run_dir / "result.json", report.model_dump(mode="json"))
     except PlanningError as exc:
         persist_error(run_dir, exc, phase="planning")
-        logger.warning("Planning failed: %s", exc)
+        logger.warning(
+            "Planning failed: run_id=%s revision=%s error=%s",
+            run_id,
+            settings.app_revision,
+            exc,
+        )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
     except Exception as exc:
         persist_error(run_dir, exc, phase="unexpected")
-        logger.exception("Unhandled error while solving Tripletex task")
+        logger.exception(
+            "Unhandled error while solving Tripletex task: run_id=%s revision=%s",
+            run_id,
+            settings.app_revision,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Unhandled server error",
@@ -86,7 +127,9 @@ def solve(
     if report.error_message:
         persist_execution_report_error(run_dir, report)
         logger.warning(
-            "Execution stopped early after %d successful actions at %s: %s",
+            "Execution stopped early: run_id=%s revision=%s successful_actions=%d failed_action=%s error=%s",
+            run_id,
+            settings.app_revision,
             len(report.action_results),
             report.failed_action_id,
             report.error_message,

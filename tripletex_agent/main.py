@@ -54,12 +54,14 @@ def solve(
         write_json(run_dir / "result.json", report.model_dump(mode="json"))
     except PlanningError as exc:
         persist_error(run_dir, exc, phase="planning")
+        logger.warning("Planning failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=str(exc),
         ) from exc
     except (PlanExecutionError, TripletexApiError) as exc:
         persist_error(run_dir, exc, phase="execution")
+        logger.warning("Execution failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),

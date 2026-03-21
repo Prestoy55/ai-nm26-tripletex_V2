@@ -829,10 +829,48 @@ def compile_create_invoice(intent: CreateInvoiceIntent) -> ExecutionPlan:
         ),
     ]
 
+    if intent.register_full_payment:
+        actions.extend(
+            [
+                TaskAction(
+                    id="list_invoice_payment_types",
+                    description="List available invoice payment types",
+                    method="GET",
+                    path="/invoice/paymentType",
+                    params={"fields": "id,name"},
+                ),
+                TaskAction(
+                    id="select_invoice_payment_type",
+                    description="Select the standard bank payment type",
+                    method="SELECT",
+                    path="",
+                    body={
+                        "source": "{{list_invoice_payment_types.values}}",
+                        "criteria": {"name": "Betalt til bank"},
+                    },
+                    save_as="payment_type",
+                ),
+                TaskAction(
+                    id="register_invoice_payment",
+                    description="Register full payment on the invoice",
+                    method="POST",
+                    path="/invoice/{{create_invoice.value.id}}/:payment",
+                    params={
+                        "date": invoice_date,
+                        "paymentTypeId": "{{payment_type.id}}",
+                        "amount": "{{create_invoice.value.amount}}",
+                    },
+                ),
+            ]
+        )
+
     return ExecutionPlan(
         goal=f"Create invoice for customer {intent.customer.name}",
         actions=actions,
-        verification_notes=["Check customer, order, and invoice creation"],
+        verification_notes=[
+            "Check customer, order, and invoice creation",
+            *(["Check invoice payment registration"] if intent.register_full_payment else []),
+        ],
     )
 
 

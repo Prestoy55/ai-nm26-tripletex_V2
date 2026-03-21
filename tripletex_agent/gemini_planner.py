@@ -13,6 +13,7 @@ from tripletex_agent.planning_base import PlanningError, TaskPlanner
 from tripletex_agent.task_compiler import compile_task_intent
 from tripletex_agent.task_intents import (
     SUPPORTED_TASK_INTENT_ADAPTER,
+    CreateInvoiceIntent,
     CreateProjectIntent,
     CreateVoucherIntent,
     InvoiceCustomerIntent,
@@ -71,7 +72,8 @@ Important mapping rules:
 - For invoices, extract customer details and invoice lines. The compiler will create customer, order, and invoice in that order.
 - For invoices, default send_to_customer=false unless the prompt explicitly says to send, email, dispatch, or deliver the invoice to the customer.
 - If the user asks to register payment for an invoice that is being created in the same task, use create_invoice and set register_full_payment=true.
-- If the prompt refers to an already existing invoice, overdue invoice, previous invoice, existing payment, bank reconciliation, or foreign-exchange settlement on an already sent invoice, prefer task_type=unsupported unless the task also includes explicit standalone journal entries that fit create_voucher.
+- Competition submissions start from a fresh account. If the prompt describes an existing or outstanding customer invoice but also provides enough explicit customer, line, and amount details to synthesize the requested end state in a fresh account, you may still use create_invoice. For example, a full-payment task can become create_invoice with register_full_payment=true, while a returned-payment task can become create_invoice without payment so the invoice remains outstanding.
+- If the prompt refers to an already existing invoice, overdue invoice, previous invoice, existing payment, bank reconciliation, or foreign-exchange settlement on an already sent invoice and the missing invoice state cannot be reconstructed from the prompt, prefer task_type=unsupported unless the task also includes explicit standalone journal entries that fit create_voucher.
 - Use create_invoice with is_credit_note=true when the prompt asks for a new full credit note and the reversed line items are explicitly given.
 - Use create_voucher for supplier invoices when the prompt explicitly provides the accounting treatment, such as expense account, VAT, and supplier ledger posting.
 - For supplier invoices, unless the prompt explicitly gives another liability account, use account 2400 for the supplier ledger credit posting.
@@ -166,6 +168,12 @@ class GeminiVertexPlanner(TaskPlanner):
             if fallback_intent is not None:
                 return compile_task_intent(
                     fallback_intent,
+                    allow_beta_endpoints=self.allow_beta_endpoints,
+                )
+            invoice_fallback_intent = build_fresh_invoice_state_fallback(prompt)
+            if invoice_fallback_intent is not None:
+                return compile_task_intent(
+                    invoice_fallback_intent,
                     allow_beta_endpoints=self.allow_beta_endpoints,
                 )
             project_fallback_intent = build_project_fallback(prompt)
@@ -763,6 +771,19 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
         if alias in payload and target not in supplier_invoice_details:
             supplier_invoice_details[target] = payload.pop(alias)
 
+    supplier = payload.pop("supplier", None)
+    if isinstance(supplier, dict):
+        supplier_name = supplier.get("name")
+        if isinstance(supplier_name, str) and "supplier_name" not in supplier_invoice_details:
+            supplier_invoice_details["supplier_name"] = supplier_name
+        supplier_org = first_non_none(
+            supplier.get("organization_number"),
+            supplier.get("org_number"),
+            supplier.get("orgnr"),
+        )
+        if isinstance(supplier_org, str) and "organization_number" not in supplier_invoice_details:
+            supplier_invoice_details["organization_number"] = supplier_org
+
     payload.pop("voucher_type", None)
 
     if isinstance(supplier_invoice_details, dict):
@@ -1163,6 +1184,130 @@ def build_project_fallback(prompt: str) -> CreateProjectIntent | None:
         project_manager_first_name=manager_first_name,
         project_manager_last_name=manager_last_name,
     )
+
+
+def build_fresh_invoice_state_fallback(prompt: str) -> CreateInvoiceIntent | None:
+    lowered = prompt.lower()
+    if not any(
+        token in lowered
+        for token in (
+            "invoice",
+            "factura",
+            "faktura",
+            "rechnung",
+            "facture",
+        )
+    ):
+        return None
+
+    register_full_payment = any(
+        token in lowered
+        for token in (
+            "register full payment",
+            "record full payment",
+            "registre le paiement intégral",
+            "enregistrez le paiement intégral",
+            "registre el pago completo",
+            "registrer full betaling",
+            "registrer full betaling",
+            "registe o pagamento integral",
+            "registe o pagamento total",
+            "erfassen sie die zahlung",
+            "vollständige zahlung",
+        )
+    )
+    reverse_payment = any(
+        token in lowered
+        for token in (
+            "reverse the payment",
+            "reverser betalingen",
+            "reverser betalingen",
+            "returned by the bank",
+            "returnert av banken",
+            "retourné par la banque",
+            "zurückgebucht",
+            "devolvida pelo banco",
+        )
+    )
+    if not register_full_payment and not reverse_payment:
+        return None
+
+    customer = extract_invoice_customer(prompt)
+    if customer is None:
+        return None
+
+    description = extract_invoice_line_description(prompt)
+    amount = extract_invoice_line_amount(prompt)
+    if not description or amount is None:
+        return None
+
+    return CreateInvoiceIntent(
+        task_type="create_invoice",
+        customer=customer,
+        register_full_payment=register_full_payment and not reverse_payment,
+        send_to_customer=False,
+        lines=[
+            {
+                "description": description,
+                "quantity": 1,
+                "unit_price_excluding_vat_currency": amount,
+            }
+        ],
+    )
+
+
+def extract_invoice_customer(prompt: str) -> InvoiceCustomerIntent | None:
+    org_match = re.search(
+        r"(?P<name>[^()]{2,120}?)\s*\((?:[^)]*?)(?:org(?:\.|anization)?(?:\s*no\.?|\s*nr\.?)?)\s*(?P<org>\d{9})\)",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    if not org_match:
+        return None
+
+    raw_name = org_match.group("name").strip(" ,:")
+    raw_name = re.sub(
+        r"^(?:the\s+payment\s+from|payment\s+from|betalingen\s+fra|die\s+zahlung\s+von|le\s+paiement\s+de|o\s+pagamento\s+de)\s+",
+        "",
+        raw_name,
+        flags=re.IGNORECASE,
+    ).strip(" ,:")
+    raw_name = re.sub(
+        r"^(?:the\s+customer|customer|kunden?|cliente|client|le\s+client|la\s+cliente)\s+",
+        "",
+        raw_name,
+        flags=re.IGNORECASE,
+    ).strip(" ,:")
+    if not raw_name:
+        return None
+
+    return InvoiceCustomerIntent(
+        name=raw_name,
+        organization_number=org_match.group("org").strip(),
+    )
+
+
+def extract_invoice_line_description(prompt: str) -> str | None:
+    match = re.search(r"[\"'“”‘’]([^\"'“”‘’]+)[\"'“”‘’]", prompt)
+    if not match:
+        return None
+    description = match.group(1).strip()
+    return description or None
+
+
+def extract_invoice_line_amount(prompt: str) -> float | None:
+    patterns = [
+        r"(\d[\d\s.,]*)\s*(?:NOK|kr)\s*(?:excluding|excl\.?|exklusiv|exclusive|ohne|hors|sin|avgiftsfri|mva|mwst|iva|tva)",
+        r"(\d[\d\s.,]*)\s*(?:NOK|kr)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, prompt, flags=re.IGNORECASE)
+        if not match:
+            continue
+        amount = parse_numeric_string(match.group(1))
+        if amount is not None:
+            return amount
+    return None
 
 
 def combine_execution_plans(plans: list[ExecutionPlan]) -> ExecutionPlan:

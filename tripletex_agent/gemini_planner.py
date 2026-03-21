@@ -200,6 +200,24 @@ def normalize_intent_payload(payload: object) -> object:
         customer = payload.get("customer")
         if isinstance(customer, dict):
             normalize_customer_payload(customer)
+        elif any(key in payload for key in ("customer_name", "company_name", "name", "email")):
+            customer_payload = {
+                "customer_name": payload.pop("customer_name", None),
+                "company_name": payload.pop("company_name", None),
+                "name": payload.pop("name", None),
+                "email": payload.pop("email", None),
+                "invoice_email": payload.pop("invoice_email", None),
+                "phone_number": payload.pop("phone_number", None),
+                "phone_number_mobile": payload.pop("phone_number_mobile", None),
+                "organization_number": payload.pop("organization_number", None),
+                "address": payload.pop("address", None),
+                "postal_code": payload.pop("postal_code", None),
+                "city": payload.pop("city", None),
+            }
+            customer_payload = {key: value for key, value in customer_payload.items() if value is not None}
+            normalize_customer_payload(customer_payload)
+            if customer_payload:
+                payload["customer"] = customer_payload
 
         if "invoice_lines" in payload and "lines" not in payload:
             payload["lines"] = payload.pop("invoice_lines")
@@ -211,6 +229,9 @@ def normalize_intent_payload(payload: object) -> object:
             for line in lines:
                 if isinstance(line, dict):
                     normalize_invoice_line_payload(line)
+
+        if "register_payment" in payload and "register_full_payment" not in payload:
+            payload["register_full_payment"] = payload.pop("register_payment")
 
     if task_type == "create_travel_expense":
         detail_keys = {
@@ -288,6 +309,34 @@ def normalize_customer_payload(payload: dict[str, object]) -> None:
         if alias in payload and target not in payload:
             payload[target] = payload.pop(alias)
 
+    address_line1 = first_non_none(
+        payload.pop("address", None),
+        payload.pop("street_address", None),
+        payload.pop("address_line1", None),
+    )
+    postal_code = first_non_none(
+        payload.pop("postal_code", None),
+        payload.pop("postalCode", None),
+        payload.pop("zip", None),
+        payload.pop("zipcode", None),
+    )
+    city = first_non_none(
+        payload.pop("city", None),
+        payload.pop("town", None),
+    )
+
+    if any(value is not None for value in (address_line1, postal_code, city)):
+        postal_address = payload.get("postal_address")
+        if not isinstance(postal_address, dict):
+            postal_address = {}
+        if address_line1 is not None and "address_line1" not in postal_address:
+            postal_address["address_line1"] = address_line1
+        if postal_code is not None and "postal_code" not in postal_address:
+            postal_address["postal_code"] = postal_code
+        if city is not None and "city" not in postal_address:
+            postal_address["city"] = city
+        payload["postal_address"] = postal_address
+
 
 def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
     alias_map = {
@@ -302,3 +351,20 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
     for alias, target in alias_map.items():
         if alias in payload and target not in payload:
             payload[target] = payload.pop(alias)
+
+    for key in ("unit_price_excluding_vat_currency", "unit_price_including_vat_currency"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            amount = value.get("amount")
+            if amount is not None:
+                payload[key] = amount
+
+    for key in ("product_id", "productId", "product_number", "productNumber"):
+        payload.pop(key, None)
+
+
+def first_non_none(*values: object) -> object | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None

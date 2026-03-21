@@ -236,6 +236,7 @@ class CreateInvoiceIntent(BaseModel):
     invoice_comment: str | None = None
     order_reference: str | None = None
     send_to_customer: bool = False
+    register_full_payment: bool = False
     lines: list[InvoiceLineIntent] = Field(default_factory=list)
 
 

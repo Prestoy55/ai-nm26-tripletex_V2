@@ -206,6 +206,29 @@ def write_json(path: Path, payload: object) -> None:
 def classify_prompt_family(prompt: str, file_count: int) -> str:
     normalized = normalize_text(prompt)
 
+    if any(
+        token in normalized
+        for token in (
+            "fri rekneskapsdimensjon",
+            "free accounting dimension",
+            "custom accounting dimension",
+            "dimension libre",
+            "dimension contable",
+        )
+    ):
+        return "custom_accounting_dimension"
+    if file_count and any(
+        token in normalized
+        for token in (
+            "bankutskrifta",
+            "bank statement",
+            "bank statement",
+            "bankutskrift",
+            "extrato bancario",
+            "releve bancaire",
+        )
+    ):
+        return "bank_reconciliation"
     if file_count and any(
         token in normalized
         for token in (
@@ -218,7 +241,19 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
         )
     ):
         return "employee_from_document"
-    if any(token in normalized for token in ("new employee", "ny ansatt", "neuen mitarbeiter", "nuevo empleado")):
+    if any(
+        token in normalized
+        for token in (
+            "new employee",
+            "ny ansatt",
+            "neuen mitarbeiter",
+            "nuevo empleado",
+            "nouvel employe",
+            "creer en tant qu'employe",
+            "veuillez le creer en tant qu'employe",
+            "legg ham som medarbeider",
+        )
+    ):
         return "employee_create"
     if any(
         token in normalized

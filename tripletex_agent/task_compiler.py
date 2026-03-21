@@ -474,6 +474,41 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
         )
     ]
 
+    employee_reference: dict[str, object] | None = None
+    if intent.employee_first_name and intent.employee_last_name:
+        actions.extend(
+            [
+                TaskAction(
+                    id="get_departments_for_voucher_employee",
+                    description="Fetch an active department to satisfy the employee create requirement",
+                    method="GET",
+                    path="/department",
+                    params={
+                        "count": 1,
+                        "isInactive": False,
+                        "fields": "id,name",
+                    },
+                ),
+                TaskAction(
+                    id="create_voucher_employee",
+                    description="Create the employee referenced by the voucher",
+                    method="POST",
+                    path="/employee",
+                    body=prune_none(
+                        {
+                            "firstName": intent.employee_first_name,
+                            "lastName": intent.employee_last_name,
+                            "email": intent.employee_email,
+                            "userType": "NO_ACCESS",
+                            "department": {"id": "{{get_departments_for_voucher_employee.values.0.id}}"},
+                        }
+                    ),
+                    save_as="employee",
+                ),
+            ]
+        )
+        employee_reference = {"id": "{{create_voucher_employee.value.id}}"}
+
     customer_reference: dict[str, object] | None = None
     requires_customer_reference = any(
         is_likely_customer_ledger_account(posting.account_number) for posting in intent.postings
@@ -575,6 +610,7 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
                             posting,
                             row=index,
                             voucher_date=voucher_date,
+                            employee_reference=employee_reference,
                             customer_reference=customer_reference,
                             supplier_reference=supplier_reference,
                             department_action_ids=department_action_ids,
@@ -988,6 +1024,7 @@ def compile_voucher_posting(
     *,
     row: int,
     voucher_date: str,
+    employee_reference: dict[str, object] | None = None,
     customer_reference: dict[str, object] | None = None,
     supplier_reference: dict[str, object] | None = None,
     department_action_ids: dict[str, str] | None = None,
@@ -1001,6 +1038,7 @@ def compile_voucher_posting(
             "amountGrossCurrency": signed_amount,
             "description": posting.description,
             "account": {"id": f"{{{{select_account_{posting.account_number}.id}}}}"},
+            "employee": employee_reference,
             "customer": customer_reference
             if customer_reference and is_likely_customer_ledger_account(posting.account_number)
             else None,

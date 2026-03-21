@@ -151,6 +151,7 @@ class GeminiVertexPlanner(TaskPlanner):
             raise PlanningError(f"Gemini planner returned invalid JSON: {exc}") from exc
 
         normalized_intent = normalize_intent_payload(raw_intent)
+        normalized_intent = enrich_intent_payload_from_prompt(prompt, normalized_intent)
 
         try:
             if isinstance(normalized_intent, list):
@@ -353,6 +354,10 @@ def normalize_intent_payload(payload: object) -> object:
 
         if "register_payment" in payload and "register_full_payment" not in payload:
             payload["register_full_payment"] = payload.pop("register_payment")
+        if "due_date" in payload and "invoice_due_date" not in payload:
+            payload["invoice_due_date"] = payload.pop("due_date")
+        if "invoiceDueDate" in payload and "invoice_due_date" not in payload:
+            payload["invoice_due_date"] = payload.pop("invoiceDueDate")
 
         payload.pop("project_name", None)
         payload.pop("currency", None)
@@ -778,6 +783,90 @@ def normalize_intent_payload_list(payloads: list[object]) -> None:
             customer["name"] = inferred_name
 
 
+def enrich_intent_payload_from_prompt(prompt: str, payload: object) -> object:
+    if isinstance(payload, list):
+        return [enrich_intent_payload_from_prompt(prompt, item) for item in payload]
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("task_type") != "create_voucher":
+        return payload
+
+    if not is_payroll_prompt(prompt):
+        return payload
+
+    employee = extract_employee_identity_from_prompt(prompt)
+    if employee is None:
+        return payload
+
+    if employee.get("first_name") and "employee_first_name" not in payload:
+        payload["employee_first_name"] = employee["first_name"]
+    if employee.get("last_name") and "employee_last_name" not in payload:
+        payload["employee_last_name"] = employee["last_name"]
+    if employee.get("email") and "employee_email" not in payload:
+        payload["employee_email"] = employee["email"]
+    return payload
+
+
+def is_payroll_prompt(prompt: str) -> bool:
+    lowered = normalize_text_for_match(prompt)
+    return any(
+        token in lowered
+        for token in (
+            "payroll",
+            "salary",
+            "bonus",
+            "gehaltsabrechnung",
+            "grundgehalt",
+            "gehalt",
+            "lonn",
+            "lønn",
+            "salario",
+            "folha",
+        )
+    )
+
+
+def extract_employee_identity_from_prompt(prompt: str) -> dict[str, str] | None:
+    email_match = re.search(r"([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})", prompt, flags=re.IGNORECASE)
+    first_name: str | None = None
+    last_name: str | None = None
+    if email_match:
+        email_value = email_match.group(1)
+        local_part = email_value.split("@", 1)[0]
+        local_parts = [part for part in re.split(r"[._\-]+", local_part) if part]
+        if len(local_parts) >= 2:
+            first_name = local_parts[0].capitalize()
+            last_name = " ".join(part.capitalize() for part in local_parts[1:])
+        leading_text = prompt[: email_match.start()]
+        name_match = re.search(r"(?P<name>[^()]{2,120})\s*\([^()]*$", leading_text)
+        if name_match and (not first_name or not last_name):
+            raw_name = name_match.group("name").strip(" ,:")
+            raw_name = re.sub(
+                r"^.*\b(?:for|fur|pour|para|til|for denne maned durch|for this month through|for this month|named|employee named|mitarbeiter namens)\s+",
+                "",
+                raw_name,
+                flags=re.IGNORECASE,
+            ).strip(" ,:")
+            first_name, last_name = split_person_name(raw_name)
+
+    if not first_name or not last_name:
+        fallback_match = re.search(
+            r"(?:for|fur|pour|para|til|named|employee named|mitarbeiter namens)\s+([^,().]{3,120})",
+            prompt,
+            flags=re.IGNORECASE,
+        )
+        if fallback_match:
+            first_name, last_name = split_person_name(fallback_match.group(1).strip(" ,:"))
+
+    if not first_name or not last_name:
+        return None
+
+    result = {"first_name": first_name, "last_name": last_name}
+    if email_match:
+        result["email"] = email_match.group(1)
+    return result
+
+
 def normalize_voucher_payload(payload: dict[str, object]) -> None:
     alias_map = {
         "date": "voucher_date",
@@ -829,6 +918,34 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
         )
         if isinstance(supplier_org, str) and "organization_number" not in supplier_invoice_details:
             supplier_invoice_details["organization_number"] = supplier_org
+
+    employee = payload.pop("employee", None)
+    if isinstance(employee, dict):
+        employee_email = employee.get("email")
+        if isinstance(employee_email, str) and "employee_email" not in payload:
+            payload["employee_email"] = employee_email
+        employee_name = first_non_none(
+            employee.get("name"),
+            employee.get("full_name"),
+        )
+        if isinstance(employee_name, str):
+            first_name, last_name = split_person_name(employee_name)
+            if first_name and "employee_first_name" not in payload:
+                payload["employee_first_name"] = first_name
+            if last_name and "employee_last_name" not in payload:
+                payload["employee_last_name"] = last_name
+
+    employee_aliases = {
+        "employee_email": "employee_email",
+        "employeeEmail": "employee_email",
+        "employee_first_name": "employee_first_name",
+        "employeeFirstName": "employee_first_name",
+        "employee_last_name": "employee_last_name",
+        "employeeLastName": "employee_last_name",
+    }
+    for alias, target in employee_aliases.items():
+        if alias in payload and target not in payload:
+            payload[target] = payload.pop(alias)
 
     description = payload.get("description")
     if isinstance(description, str):

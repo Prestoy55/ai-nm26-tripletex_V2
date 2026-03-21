@@ -222,6 +222,11 @@ Useful environment variables:
 
 Container build is supported through `Dockerfile`.
 
+Important Cloud Run note:
+
+- Cloud Run reserves some paths ending in `z`, and `/healthz` can be intercepted before the request reaches the container
+- use `/health` or `/` to verify a public Cloud Run deployment instead of `/healthz`
+
 Example deployment shape:
 
 ```bash
@@ -259,6 +264,7 @@ gcloud app deploy
 After deploy, the public endpoints should be:
 
 - `/`
+- `/health`
 - `/healthz`
 - `/solve`
 

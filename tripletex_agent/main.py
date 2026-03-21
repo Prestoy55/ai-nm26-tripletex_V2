@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -60,10 +62,12 @@ def solve(
     enforce_api_key(settings.endpoint_api_key, authorization)
     run_dir = create_run_dir(settings.runs_dir)
     run_id = run_dir.name
+    prompt_family = classify_prompt_family(payload.prompt, len(payload.files))
     logger.info(
-        "Received solve request: run_id=%s revision=%s prompt=%r files=%d",
+        "Received solve request: run_id=%s revision=%s family=%s prompt=%r files=%d",
         run_id,
         settings.app_revision,
+        prompt_family,
         payload.prompt[:400],
         len(payload.files),
     )
@@ -90,9 +94,10 @@ def solve(
     try:
         plan = planner.build_plan(payload.prompt, prepared_attachments)
         logger.info(
-            "Compiled plan: run_id=%s revision=%s goal=%r actions=%d",
+            "Compiled plan: run_id=%s revision=%s family=%s goal=%r actions=%d",
             run_id,
             settings.app_revision,
+            prompt_family,
             plan.goal,
             len(plan.actions),
         )
@@ -103,9 +108,10 @@ def solve(
     except PlanningError as exc:
         persist_error(run_dir, exc, phase="planning")
         logger.warning(
-            "Planning failed: run_id=%s revision=%s error=%s",
+            "Planning failed: run_id=%s revision=%s family=%s error=%s",
             run_id,
             settings.app_revision,
+            prompt_family,
             exc,
         )
         raise HTTPException(
@@ -115,9 +121,10 @@ def solve(
     except Exception as exc:
         persist_error(run_dir, exc, phase="unexpected")
         logger.exception(
-            "Unhandled error while solving Tripletex task: run_id=%s revision=%s",
+            "Unhandled error while solving Tripletex task: run_id=%s revision=%s family=%s",
             run_id,
             settings.app_revision,
+            prompt_family,
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -127,9 +134,10 @@ def solve(
     if report.error_message:
         persist_execution_report_error(run_dir, report)
         logger.warning(
-            "Execution stopped early: run_id=%s revision=%s successful_actions=%d failed_action=%s error=%s",
+            "Execution stopped early: run_id=%s revision=%s family=%s successful_actions=%d failed_action=%s error=%s",
             run_id,
             settings.app_revision,
+            prompt_family,
             len(report.action_results),
             report.failed_action_id,
             report.error_message,
@@ -193,3 +201,62 @@ def write_json(path: Path, payload: object) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+
+
+def classify_prompt_family(prompt: str, file_count: int) -> str:
+    normalized = normalize_text(prompt)
+
+    if file_count and any(
+        token in normalized
+        for token in (
+            "contract",
+            "contrato de trabajo",
+            "arbeidskontrakt",
+            "contrat de travail",
+            "carta de oferta",
+            "arbeidstilbud",
+        )
+    ):
+        return "employee_from_document"
+    if any(token in normalized for token in ("new employee", "ny ansatt", "neuen mitarbeiter", "nuevo empleado")):
+        return "employee_create"
+    if any(
+        token in normalized
+        for token in (
+            "supplier invoice",
+            "lieferantenrechnung",
+            "leverandorfaktura",
+            "facture fournisseur",
+            "factura del proveedor",
+            "fatura do fornecedor",
+            "vom lieferanten",
+            "from the supplier",
+        )
+    ):
+        return "supplier_invoice"
+    if any(token in normalized for token in ("create product", "opprett produkt", "creez le produit", "crie o produto", "producto")):
+        return "product_create"
+    if any(token in normalized for token in ("create three departments", "opprett tre avdel", "cree trois depart", "departments in tripletex", "avdelingar", "departamentos")):
+        return "department_batch_create"
+    if any(token in normalized for token in ("project manager", "prosjektleder", "director del proyecto", "gerente de projeto")):
+        return "project_create"
+    if any(token in normalized for token in ("register full payment", "registrer full betaling", "zahlung", "pagamento", "payment was returned", "reverser betalingen")):
+        return "invoice_payment_flow"
+    if any(token in normalized for token in ("exchange rate", "wechselkurs", "disagio", "agio")):
+        return "foreign_currency_payment"
+    if any(token in normalized for token in ("find de 4 errors", "finn de 4 feilene", "revise todos os vouchers", "hauptbuch", "livro razao")):
+        return "ledger_correction"
+    if any(token in normalized for token in ("travel expense", "reisekost", "despesa de viagem", "frais de deplacement")):
+        return "travel_expense"
+    if file_count and any(token in normalized for token in ("receipt", "recibo", "kvittering")):
+        return "receipt_voucher"
+    if any(token in normalized for token in ("invoice", "faktura", "facture", "factura", "fatura")):
+        return "invoice_create"
+    if any(token in normalized for token in ("customer", "kunde", "cliente", "client")):
+        return "customer_create"
+    return "unknown"
+
+
+def normalize_text(value: str) -> str:
+    ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", ascii_value).strip().lower()

@@ -276,6 +276,10 @@ def normalize_intent_payload(payload: object) -> object:
     if task_type == "create_project":
         if "project_name" in payload and "name" not in payload:
             payload["name"] = payload.pop("project_name")
+        if "fixed_price_amount_currency" in payload and "fixed_price_amount" not in payload:
+            payload["fixed_price_amount"] = payload.pop("fixed_price_amount_currency")
+        if "fixedPriceAmountCurrency" in payload and "fixed_price_amount" not in payload:
+            payload["fixed_price_amount"] = payload.pop("fixedPriceAmountCurrency")
         project_manager = payload.pop("project_manager", None)
         if isinstance(project_manager, dict):
             if "project_manager_email" not in payload and isinstance(project_manager.get("email"), str):
@@ -587,6 +591,7 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         "fte_percentage": "employment_percentage",
         "position_percentage": "employment_percentage",
         "dailyWorkingHours": "daily_working_hours",
+        "daily_work_hours": "daily_working_hours",
         "working_hours_per_day": "daily_working_hours",
         "hours_per_day": "daily_working_hours",
         "standard_daily_hours": "daily_working_hours",
@@ -994,6 +999,11 @@ def parse_address_string(value: str) -> dict[str, object]:
 
 
 def normalize_address_payload(payload: dict[str, object]) -> None:
+    if "address" in payload and "address_line1" not in payload:
+        payload["address_line1"] = payload.pop("address")
+    if "addressLine1" in payload and "address_line1" not in payload:
+        payload["address_line1"] = payload.pop("addressLine1")
+
     country = payload.pop("country", None)
     if "country_id" not in payload:
         if isinstance(country, dict):
@@ -1117,6 +1127,7 @@ def build_deterministic_intent(prompt: str) -> object | None:
     for builder in (
         build_supplier_invoice_fallback,
         build_travel_expense_fallback,
+        build_hours_invoice_fallback,
         build_fresh_invoice_state_fallback,
     ):
         intent = builder(prompt)
@@ -1430,6 +1441,78 @@ def build_travel_expense_fallback(prompt: str) -> CreateTravelExpenseIntent | No
     )
 
 
+def build_hours_invoice_fallback(prompt: str) -> CreateInvoiceIntent | None:
+    lowered = normalize_text_for_match(prompt)
+    if not any(token in lowered for token in ("log ", "logged hours", "timer", "horas", "heures")):
+        return None
+    if not any(token in lowered for token in ("invoice", "factura", "faktura", "rechnung", "facture")):
+        return None
+
+    customer = extract_invoice_customer(prompt)
+    if customer is None:
+        return None
+
+    hours_match = re.search(
+        r"(\d[\d\s.,]*)\s*(?:hours?|timer|horas|heures)\b",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    rate_match = re.search(
+        r"(\d[\d\s.,]*)\s*(?:NOK|kr)\s*/\s*h\b|hourly rate[: ]+(\d[\d\s.,]*)\s*(?:NOK|kr)",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    if not hours_match or not rate_match:
+        return None
+
+    hours = parse_numeric_string(hours_match.group(1))
+    rate = parse_numeric_string(rate_match.group(1) or rate_match.group(2))
+    if hours is None or rate is None:
+        return None
+
+    activity_match = re.search(r'activity\s+"([^"]+)"|aktivitet\s+"([^"]+)"', prompt, flags=re.IGNORECASE)
+    project_match = re.search(r'project\s+"([^"]+)"|prosjekt\s+"([^"]+)"', prompt, flags=re.IGNORECASE)
+    activity_name = next(
+        (
+            group
+            for group in (
+                activity_match.group(1) if activity_match else None,
+                activity_match.group(2) if activity_match else None,
+            )
+            if group
+        ),
+        None,
+    )
+    project_name = next(
+        (
+            group
+            for group in (
+                project_match.group(1) if project_match else None,
+                project_match.group(2) if project_match else None,
+            )
+            if group
+        ),
+        None,
+    )
+
+    description_parts = [activity_name or "Consulting hours"]
+    if project_name:
+        description_parts.append(project_name)
+
+    return CreateInvoiceIntent(
+        task_type="create_invoice",
+        customer=customer,
+        send_to_customer=False,
+        lines=[
+            {
+                "description": " - ".join(description_parts),
+                "quantity": hours,
+                "unit_price_excluding_vat_currency": rate,
+            }
+        ],
+    )
+
+
 def build_fresh_invoice_state_fallback(prompt: str) -> CreateInvoiceIntent | None:
     lowered = normalize_text_for_match(prompt)
     if not any(
@@ -1518,6 +1601,12 @@ def extract_invoice_customer(prompt: str) -> InvoiceCustomerIntent | None:
     ).strip(" ,:")
     raw_name = re.sub(
         r"^(?:the\s+customer|customer|kunden?|cliente|client|le\s+client|la\s+cliente)\s+",
+        "",
+        raw_name,
+        flags=re.IGNORECASE,
+    ).strip(" ,:")
+    raw_name = re.sub(
+        r"^.*\b(?:for|til|para|pour|customer|kunden?|cliente|client)\s+",
         "",
         raw_name,
         flags=re.IGNORECASE,

@@ -13,6 +13,7 @@ from tripletex_agent.task_intents import (
     CreateProjectIntent,
     CreateProductIntent,
     CreateTravelExpenseIntent,
+    CreateVoucherIntent,
     DeleteTravelExpenseIntent,
     DeleteDepartmentIntent,
     InvoiceCustomerIntent,
@@ -21,6 +22,7 @@ from tripletex_agent.task_intents import (
     UpdateCustomerIntent,
     UpdateEmployeeIntent,
     UnsupportedTaskIntent,
+    VoucherPostingIntent,
 )
 
 
@@ -45,6 +47,8 @@ def compile_task_intent(
         return compile_create_department(intent)
     if isinstance(intent, DeleteDepartmentIntent):
         return compile_delete_department(intent)
+    if isinstance(intent, CreateVoucherIntent):
+        return compile_create_voucher(intent)
     if isinstance(intent, CreateTravelExpenseIntent):
         return compile_create_travel_expense(intent)
     if isinstance(intent, DeleteTravelExpenseIntent):
@@ -434,6 +438,79 @@ def compile_delete_department(intent: DeleteDepartmentIntent) -> ExecutionPlan:
     )
 
 
+def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
+    if len(intent.postings) < 2:
+        raise PlanningError("Voucher tasks require at least two postings")
+
+    debit_total = sum(
+        posting.amount for posting in intent.postings if posting.entry_type == "DEBIT"
+    )
+    credit_total = sum(
+        posting.amount for posting in intent.postings if posting.entry_type == "CREDIT"
+    )
+    if round(debit_total - credit_total, 2) != 0:
+        raise PlanningError("Voucher postings must balance between debit and credit")
+
+    voucher_date = intent.voucher_date or iso_today()
+    unique_account_numbers = []
+    for posting in intent.postings:
+        if posting.account_number not in unique_account_numbers:
+            unique_account_numbers.append(posting.account_number)
+
+    actions: list[TaskAction] = [
+        TaskAction(
+            id="list_ledger_accounts",
+            description="Fetch chart of accounts so voucher postings can reference account IDs",
+            method="GET",
+            path="/ledger/account",
+            params={
+                "count": 1000,
+                "fields": "id,number,name,ledgerType,vatType(id),legalVatTypes(id),vatLocked",
+            },
+        )
+    ]
+
+    for account_number in unique_account_numbers:
+        actions.append(
+            TaskAction(
+                id=f"select_account_{account_number}",
+                description=f"Select ledger account {account_number}",
+                method="SELECT",
+                path="select",
+                body={
+                    "source": "{{list_ledger_accounts.values}}",
+                    "criteria": {"number": account_number},
+                },
+            )
+        )
+
+    actions.append(
+        TaskAction(
+            id="create_voucher",
+            description="Create the voucher with the requested postings",
+            method="POST",
+            path="/ledger/voucher",
+            body=prune_none(
+                {
+                    "date": voucher_date,
+                    "description": intent.description or "Voucher created by automation",
+                    "postings": [
+                        compile_voucher_posting(posting, row=index, voucher_date=voucher_date)
+                        for index, posting in enumerate(intent.postings, start=1)
+                    ],
+                }
+            ),
+            save_as="voucher",
+        )
+    )
+
+    return ExecutionPlan(
+        goal=intent.description or f"Create voucher dated {voucher_date}",
+        actions=actions,
+        verification_notes=["Check that the voucher was created with balanced postings"],
+    )
+
+
 def compile_create_travel_expense(intent: CreateTravelExpenseIntent) -> ExecutionPlan:
     actions = [
         TaskAction(
@@ -735,6 +812,26 @@ def compile_invoice_line(line: InvoiceLineIntent) -> dict[str, object]:
     if line.vat_type_id is not None:
         body["vatType"] = {"id": line.vat_type_id}
     return body
+
+
+def compile_voucher_posting(
+    posting: VoucherPostingIntent,
+    *,
+    row: int,
+    voucher_date: str,
+) -> dict[str, object]:
+    signed_amount = posting.amount if posting.entry_type == "DEBIT" else -posting.amount
+    return prune_none(
+        {
+            "row": row,
+            "date": voucher_date,
+            "amountGross": signed_amount,
+            "amountGrossCurrency": signed_amount,
+            "description": posting.description,
+            "account": {"id": f"{{{{select_account_{posting.account_number}.id}}}}"},
+            "vatType": {"id": posting.vat_type_id} if posting.vat_type_id is not None else None,
+        }
+    )
 
 
 def compile_address(address: AddressInput) -> dict[str, object]:

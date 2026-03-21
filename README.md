@@ -133,6 +133,7 @@ Implemented first-pass support:
 - update employee
 - create department
 - delete department
+- create voucher
 - create travel expense
 - delete travel expense
 - create project
@@ -155,7 +156,16 @@ Still unsupported in the current code:
 - travel expense attachment workflows
 - module setup tasks
 - payment registration and credit notes
-- ledger and voucher workflows
+- ledger analysis and voucher correction workflows
+
+Current voucher flow is explicit-only:
+
+1. fetch chart of accounts
+2. resolve account IDs locally by account number
+3. create a balanced voucher through `/ledger/voucher`
+
+This is intended for prompts that already specify debit/credit account numbers and amounts, such as accruals,
+depreciation, provisions, and other direct journal entries.
 
 ## Live Validation
 
@@ -172,6 +182,10 @@ Live sandbox validation completed on March 20, 2026:
 - customer update succeeded
 - project creation succeeded after assigning a project manager and defaulting startDate
 - employee update succeeded when the prompt supplied a birth date for a target employee missing dateOfBirth
+
+Local validation completed on March 21, 2026:
+
+- explicit `create_voucher` intents now normalize and compile into `GET /ledger/account` plus `POST /ledger/voucher`
 
 Observed sandbox-specific blocker on March 20, 2026:
 

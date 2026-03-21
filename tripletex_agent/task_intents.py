@@ -170,6 +170,25 @@ class DeleteDepartmentIntent(BaseModel):
     match_name: str
 
 
+class VoucherPostingIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_number: int
+    entry_type: Literal["DEBIT", "CREDIT"]
+    amount: float = Field(gt=0)
+    description: str | None = None
+    vat_type_id: int | None = None
+
+
+class CreateVoucherIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_type: Literal["create_voucher"]
+    voucher_date: str | None = None
+    description: str | None = None
+    postings: list[VoucherPostingIntent] = Field(default_factory=list)
+
+
 class TravelExpenseDetailsIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -257,6 +276,7 @@ SupportedTaskIntent = Annotated[
     | UpdateEmployeeIntent
     | CreateDepartmentIntent
     | DeleteDepartmentIntent
+    | CreateVoucherIntent
     | CreateTravelExpenseIntent
     | DeleteTravelExpenseIntent
     | CreateProjectIntent

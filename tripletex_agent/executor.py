@@ -152,7 +152,7 @@ def run_select_action(action_id: str, payload: Any) -> Any:
     for item in source:
         if not isinstance(item, dict):
             continue
-        if all(select_value(item, key) == expected for key, expected in criteria.items()):
+        if all(values_match(select_value(item, key), expected) for key, expected in criteria.items()):
             matches.append(item)
 
     if not matches:
@@ -169,3 +169,11 @@ def select_value(payload: Any, path: str) -> Any:
             return None
         current = current[part]
     return current
+
+
+def values_match(actual: Any, expected: Any) -> bool:
+    if actual == expected:
+        return True
+    if isinstance(actual, (int, float, str)) and isinstance(expected, (int, float, str)):
+        return str(actual).strip() == str(expected).strip()
+    return False

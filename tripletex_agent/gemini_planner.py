@@ -43,6 +43,7 @@ Currently supported task families:
 - update_employee
 - create_department
 - delete_department
+- create_voucher
 - create_travel_expense
 - delete_travel_expense
 - create_project
@@ -62,8 +63,13 @@ Important mapping rules:
 - For invoices, extract customer details and invoice lines. The compiler will create customer, order, and invoice in that order.
 - For invoices, default send_to_customer=false unless the prompt explicitly says to send, email, dispatch, or deliver the invoice to the customer.
 - If the user asks to register payment for an invoice, still use create_invoice and set register_full_payment=true.
+- Use create_voucher for explicit journal entries, accruals, depreciation, provisions, reminder-fee postings, and other bookkeeping tasks when the prompt already specifies the debit/credit account numbers and amounts.
+- create_voucher.postings must be balanced. Each posting must include account_number, entry_type (DEBIT or CREDIT), and amount.
+- If a prompt mixes supported journal entries with unsupported verification or analysis, still return the supported create_voucher tasks for the explicit postings and ignore the unsupported verification-only part.
+- If the prompt first requires analyzing the ledger, finding the right vouchers, reconciling bank data, or locating an overdue invoice before the postings can be known, prefer task_type=unsupported unless the final corrective postings are already explicit.
 - For customer creation, flat address fields like address, postal_code, and city should be mapped into postal_address.
 - Invoice lines must include description and quantity. Include either unit_price_excluding_vat_currency or unit_price_including_vat_currency when the prompt provides price information.
+- The planner may return a JSON array of supported intents when the prompt clearly asks for multiple independent creates or vouchers.
 - Use ISO dates in YYYY-MM-DD format.
 """.strip()
 
@@ -314,6 +320,9 @@ def normalize_intent_payload(payload: object) -> object:
         payload.pop("trip_dates", None)
         payload.pop("travel_dates", None)
 
+    if task_type == "create_voucher":
+        normalize_voucher_payload(payload)
+
     if task_type == "delete_travel_expense":
         if "travel_expense_title" in payload and "title" not in payload:
             payload["title"] = payload.pop("travel_expense_title")
@@ -424,6 +433,104 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
 
     for key in ("product_id", "productId", "product_number", "productNumber"):
         payload.pop(key, None)
+
+
+def normalize_voucher_payload(payload: dict[str, object]) -> None:
+    alias_map = {
+        "date": "voucher_date",
+        "voucherDate": "voucher_date",
+        "text": "description",
+        "comment": "description",
+        "journal_entries": "postings",
+        "entries": "postings",
+        "lines": "postings",
+    }
+
+    for alias, target in alias_map.items():
+        if alias in payload and target not in payload:
+            payload[target] = payload.pop(alias)
+
+    if "amount" in payload and "postings" not in payload:
+        debit_account = first_non_none(
+            payload.pop("debit_account_number", None),
+            payload.pop("debitAccountNumber", None),
+        )
+        credit_account = first_non_none(
+            payload.pop("credit_account_number", None),
+            payload.pop("creditAccountNumber", None),
+        )
+        amount = payload.get("amount")
+        if debit_account is not None and credit_account is not None and amount is not None:
+            payload["postings"] = [
+                {
+                    "account_number": debit_account,
+                    "entry_type": "DEBIT",
+                    "amount": amount,
+                },
+                {
+                    "account_number": credit_account,
+                    "entry_type": "CREDIT",
+                    "amount": amount,
+                },
+            ]
+
+    postings = payload.get("postings")
+    if not isinstance(postings, list):
+        return
+
+    for posting in postings:
+        if isinstance(posting, dict):
+            normalize_voucher_posting_payload(posting)
+
+
+def normalize_voucher_posting_payload(payload: dict[str, object]) -> None:
+    if "account" in payload and "account_number" not in payload:
+        account = payload.pop("account")
+        if isinstance(account, dict) and "number" in account:
+            payload["account_number"] = account["number"]
+        elif isinstance(account, (int, str)):
+            payload["account_number"] = account
+
+    alias_map = {
+        "accountNumber": "account_number",
+        "account_no": "account_number",
+        "accountNo": "account_number",
+        "number": "account_number",
+        "direction": "entry_type",
+        "type": "entry_type",
+        "posting_type": "entry_type",
+        "vatTypeId": "vat_type_id",
+        "vat_code_id": "vat_type_id",
+        "text": "description",
+        "comment": "description",
+    }
+
+    for alias, target in alias_map.items():
+        if alias in payload and target not in payload:
+            payload[target] = payload.pop(alias)
+
+    if "debit_amount" in payload and "amount" not in payload:
+        payload["amount"] = payload.pop("debit_amount")
+        payload["entry_type"] = "DEBIT"
+    if "credit_amount" in payload and "amount" not in payload:
+        payload["amount"] = payload.pop("credit_amount")
+        payload["entry_type"] = "CREDIT"
+
+    entry_type = payload.get("entry_type")
+    if isinstance(entry_type, str):
+        normalized = entry_type.strip().upper()
+        if normalized in {"DEBIT", "DR"}:
+            payload["entry_type"] = "DEBIT"
+        elif normalized in {"CREDIT", "CR"}:
+            payload["entry_type"] = "CREDIT"
+
+    for key in ("amount", "vat_type_id"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            try:
+                payload[key] = float(value) if key == "amount" else int(value)
+            except ValueError:
+                continue
 
 
 def first_non_none(*values: object) -> object | None:

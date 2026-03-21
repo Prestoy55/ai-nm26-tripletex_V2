@@ -64,6 +64,8 @@ Important mapping rules:
 - For invoices, default send_to_customer=false unless the prompt explicitly says to send, email, dispatch, or deliver the invoice to the customer.
 - If the user asks to register payment for an invoice that is being created in the same task, use create_invoice and set register_full_payment=true.
 - If the prompt refers to an already existing invoice, overdue invoice, previous invoice, existing payment, bank reconciliation, or foreign-exchange settlement on an already sent invoice, prefer task_type=unsupported unless the task also includes explicit standalone journal entries that fit create_voucher.
+- Use create_invoice with is_credit_note=true when the prompt asks for a new full credit note and the reversed line items are explicitly given.
+- Use create_voucher for supplier invoices when the prompt explicitly provides the accounting treatment, such as expense account, VAT, and supplier ledger posting.
 - Use create_voucher for explicit journal entries, accruals, depreciation, provisions, reminder-fee postings, and other bookkeeping tasks when the prompt already specifies the debit/credit account numbers and amounts.
 - create_voucher.postings must be balanced. Each posting must include account_number, entry_type (DEBIT or CREDIT), and amount.
 - If a prompt mixes supported journal entries with unsupported verification or analysis, still return the supported create_voucher tasks for the explicit postings and ignore the unsupported verification-only part.
@@ -234,6 +236,9 @@ def normalize_intent_payload(payload: object) -> object:
             normalize_customer_payload(customer)
 
     if task_type == "create_invoice":
+        if "credit_note" in payload and "is_credit_note" not in payload:
+            payload["is_credit_note"] = payload.pop("credit_note")
+
         customer = payload.get("customer")
         if isinstance(customer, dict):
             normalize_customer_payload(customer)
@@ -464,6 +469,14 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
         if alias in payload and target not in payload:
             payload[target] = payload.pop(alias)
 
+    supplier_invoice_details = payload.get("supplier_invoice_details")
+    if isinstance(supplier_invoice_details, dict):
+        total_amount = supplier_invoice_details.get("total_amount_including_vat")
+        if isinstance(total_amount, str):
+            parsed_total_amount = parse_numeric_string(total_amount)
+            if parsed_total_amount is not None:
+                supplier_invoice_details["total_amount_including_vat"] = parsed_total_amount
+
     if "amount" in payload and "postings" not in payload:
         debit_account = first_non_none(
             payload.pop("debit_account_number", None),
@@ -538,13 +551,19 @@ def normalize_voucher_posting_payload(payload: dict[str, object]) -> None:
         elif normalized in {"CREDIT", "CR"}:
             payload["entry_type"] = "CREDIT"
 
+    account_number = payload.get("account_number")
+    if isinstance(account_number, str):
+        parsed_account_number = parse_numeric_string(account_number)
+        if parsed_account_number is not None:
+            payload["account_number"] = int(parsed_account_number)
+
     for key in ("amount", "vat_type_id"):
         value = payload.get(key)
         if isinstance(value, str):
-            try:
-                payload[key] = float(value) if key == "amount" else int(value)
-            except ValueError:
+            parsed_value = parse_numeric_string(value)
+            if parsed_value is None:
                 continue
+            payload[key] = parsed_value if key == "amount" else int(parsed_value)
 
 
 def first_non_none(*values: object) -> object | None:

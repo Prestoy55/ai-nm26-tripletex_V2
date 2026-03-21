@@ -470,6 +470,27 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
         )
     ]
 
+    supplier_reference: dict[str, object] | None = None
+    if intent.supplier_invoice_details:
+        actions.append(
+            TaskAction(
+                id="create_voucher_supplier",
+                description="Create the supplier referenced by the supplier invoice",
+                method="POST",
+                path="/customer",
+                body=prune_none(
+                    {
+                        "name": intent.supplier_invoice_details.supplier_name,
+                        "organizationNumber": intent.supplier_invoice_details.organization_number,
+                        "isCustomer": False,
+                        "isSupplier": True,
+                    }
+                ),
+                save_as="supplier",
+            )
+        )
+        supplier_reference = {"id": "{{create_voucher_supplier.value.id}}"}
+
     for account_number in unique_account_numbers:
         actions.append(
             TaskAction(
@@ -495,7 +516,12 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
                     "date": voucher_date,
                     "description": intent.description or "Voucher created by automation",
                     "postings": [
-                        compile_voucher_posting(posting, row=index, voucher_date=voucher_date)
+                        compile_voucher_posting(
+                            posting,
+                            row=index,
+                            voucher_date=voucher_date,
+                            supplier_reference=supplier_reference,
+                        )
                         for index, posting in enumerate(intent.postings, start=1)
                     ],
                 }
@@ -819,6 +845,7 @@ def compile_voucher_posting(
     *,
     row: int,
     voucher_date: str,
+    supplier_reference: dict[str, object] | None = None,
 ) -> dict[str, object]:
     signed_amount = posting.amount if posting.entry_type == "DEBIT" else -posting.amount
     return prune_none(
@@ -829,6 +856,9 @@ def compile_voucher_posting(
             "amountGrossCurrency": signed_amount,
             "description": posting.description,
             "account": {"id": f"{{{{select_account_{posting.account_number}.id}}}}"},
+            "supplier": supplier_reference
+            if supplier_reference and is_likely_supplier_ledger_account(posting.account_number)
+            else None,
             "vatType": {"id": posting.vat_type_id} if posting.vat_type_id is not None else None,
         }
     )
@@ -845,6 +875,10 @@ def compile_address(address: AddressInput) -> dict[str, object]:
     if address.country_id is not None:
         body["country"] = {"id": address.country_id}
     return body
+
+
+def is_likely_supplier_ledger_account(account_number: int) -> bool:
+    return 2400 <= account_number <= 2499
 
 
 def iso_today() -> str:

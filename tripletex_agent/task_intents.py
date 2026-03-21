@@ -180,15 +180,6 @@ class VoucherPostingIntent(BaseModel):
     vat_type_id: int | None = None
 
 
-class CreateVoucherIntent(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    task_type: Literal["create_voucher"]
-    voucher_date: str | None = None
-    description: str | None = None
-    postings: list[VoucherPostingIntent] = Field(default_factory=list)
-
-
 class TravelExpenseDetailsIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -251,6 +242,19 @@ class InvoiceLineIntent(BaseModel):
     vat_type_id: int | None = None
 
 
+class SupplierInvoiceDetailsIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    supplier_name: str
+    organization_number: str | None = None
+    supplier_address: str | None = None
+    invoice_number: str | None = None
+    invoice_date: str | None = None
+    due_date: str | None = None
+    total_amount_including_vat: float | None = None
+    currency: str | None = None
+
+
 class CreateInvoiceIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -263,8 +267,19 @@ class CreateInvoiceIntent(BaseModel):
     invoice_comment: str | None = None
     order_reference: str | None = None
     send_to_customer: bool = False
+    is_credit_note: bool = False
     register_full_payment: bool = False
     lines: list[InvoiceLineIntent] = Field(default_factory=list)
+
+
+class CreateVoucherIntent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_type: Literal["create_voucher"]
+    voucher_date: str | None = None
+    description: str | None = None
+    supplier_invoice_details: SupplierInvoiceDetailsIntent | None = None
+    postings: list[VoucherPostingIntent] = Field(default_factory=list)
 
 
 SupportedTaskIntent = Annotated[

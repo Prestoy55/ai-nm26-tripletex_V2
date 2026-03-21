@@ -62,7 +62,8 @@ Important mapping rules:
 - If the user asks to create a project for a customer in an otherwise empty account, include the customer subobject so the compiler can create the customer first.
 - For invoices, extract customer details and invoice lines. The compiler will create customer, order, and invoice in that order.
 - For invoices, default send_to_customer=false unless the prompt explicitly says to send, email, dispatch, or deliver the invoice to the customer.
-- If the user asks to register payment for an invoice, still use create_invoice and set register_full_payment=true.
+- If the user asks to register payment for an invoice that is being created in the same task, use create_invoice and set register_full_payment=true.
+- If the prompt refers to an already existing invoice, overdue invoice, previous invoice, existing payment, bank reconciliation, or foreign-exchange settlement on an already sent invoice, prefer task_type=unsupported unless the task also includes explicit standalone journal entries that fit create_voucher.
 - Use create_voucher for explicit journal entries, accruals, depreciation, provisions, reminder-fee postings, and other bookkeeping tasks when the prompt already specifies the debit/credit account numbers and amounts.
 - create_voucher.postings must be balanced. Each posting must include account_number, entry_type (DEBIT or CREDIT), and amount.
 - If a prompt mixes supported journal entries with unsupported verification or analysis, still return the supported create_voucher tasks for the explicit postings and ignore the unsupported verification-only part.
@@ -269,6 +270,9 @@ def normalize_intent_payload(payload: object) -> object:
         if "register_payment" in payload and "register_full_payment" not in payload:
             payload["register_full_payment"] = payload.pop("register_payment")
 
+        for key in ("currency_code", "exchange_rate", "payment_exchange_rate"):
+            payload.pop(key, None)
+
     if task_type == "create_travel_expense":
         detail_keys = {
             "departure_date",
@@ -430,6 +434,16 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
             amount = value.get("amount")
             if amount is not None:
                 payload[key] = amount
+        elif isinstance(value, str):
+            parsed = parse_numeric_string(value)
+            if parsed is not None:
+                payload[key] = parsed
+
+    quantity = payload.get("quantity")
+    if isinstance(quantity, str):
+        parsed_quantity = parse_numeric_string(quantity)
+        if parsed_quantity is not None:
+            payload["quantity"] = parsed_quantity
 
     for key in ("product_id", "productId", "product_number", "productNumber"):
         payload.pop(key, None)
@@ -538,6 +552,26 @@ def first_non_none(*values: object) -> object | None:
         if value is not None:
             return value
     return None
+
+
+def parse_numeric_string(value: str) -> float | None:
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+
+    cleaned = re.sub(r"[^\d,.\-]", "", cleaned)
+    if not cleaned:
+        return None
+
+    if "," in cleaned and "." in cleaned:
+        cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(",", ".")
+
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
 
 
 def combine_execution_plans(plans: list[ExecutionPlan]) -> ExecutionPlan:

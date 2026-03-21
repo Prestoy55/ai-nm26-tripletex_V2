@@ -13,7 +13,9 @@ from tripletex_agent.planning_base import PlanningError, TaskPlanner
 from tripletex_agent.task_compiler import compile_task_intent
 from tripletex_agent.task_intents import (
     SUPPORTED_TASK_INTENT_ADAPTER,
+    CreateProjectIntent,
     CreateVoucherIntent,
+    InvoiceCustomerIntent,
     VoucherPostingIntent,
 )
 
@@ -64,6 +66,7 @@ Important mapping rules:
 - If the user asks to delete a travel expense, use delete_travel_expense and extract the travel expense title plus the employee first and last name.
 - If the prompt includes an employee birth date for an update, put it in new_date_of_birth using ISO format.
 - If the user asks to create a project for a customer in an otherwise empty account, include the customer subobject so the compiler can create the customer first.
+- If the prompt mixes supported project creation with unsupported lifecycle steps like time logging, supplier costs without explicit journal postings, or invoice generation without concrete line items, still return create_project and ignore the unsupported parts.
 - If the user asks to register a supplier/vendor/leverandor/proveedor/fournisseur/fornecedor, use create_customer with is_supplier=true and is_customer=false.
 - For invoices, extract customer details and invoice lines. The compiler will create customer, order, and invoice in that order.
 - For invoices, default send_to_customer=false unless the prompt explicitly says to send, email, dispatch, or deliver the invoice to the customer.
@@ -163,6 +166,12 @@ class GeminiVertexPlanner(TaskPlanner):
             if fallback_intent is not None:
                 return compile_task_intent(
                     fallback_intent,
+                    allow_beta_endpoints=self.allow_beta_endpoints,
+                )
+            project_fallback_intent = build_project_fallback(prompt)
+            if project_fallback_intent is not None:
+                return compile_task_intent(
+                    project_fallback_intent,
                     allow_beta_endpoints=self.allow_beta_endpoints,
                 )
 
@@ -526,6 +535,7 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         "positionCode": "position_code",
         "job_code": "position_code",
         "jobCode": "position_code",
+        "position": "job_title",
         "jobTitle": "job_title",
         "title": "job_title",
         "salary": "annual_salary",
@@ -533,6 +543,7 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         "employmentPercent": "employment_percentage",
         "employment_rate": "employment_percentage",
         "employmentPercentage": "employment_percentage",
+        "fte_percentage": "employment_percentage",
         "dailyWorkingHours": "daily_working_hours",
         "working_hours_per_day": "daily_working_hours",
         "hours_per_day": "daily_working_hours",
@@ -544,12 +555,21 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         if alias in payload and target not in payload:
             payload[target] = payload.pop(alias)
 
+    department_name = payload.get("department_name")
+    if isinstance(department_name, dict):
+        payload["department_name"] = first_non_none(
+            department_name.get("name"),
+            department_name.get("department_name"),
+        )
+
     for key in ("annual_salary", "employment_percentage", "daily_working_hours"):
         value = payload.get(key)
         if isinstance(value, str):
             parsed_value = parse_numeric_string(value)
             if parsed_value is not None:
                 payload[key] = parsed_value
+
+    payload.pop("employment_type", None)
 
     entitlement_template = payload.get("entitlement_template")
     if isinstance(entitlement_template, str):
@@ -1013,6 +1033,49 @@ def infer_voucher_description(prompt: str, amount: float) -> str:
     if any(token in lowered for token in ("reminder", "recordatorio", "påminn", "rappel", "mahn")):
         return f"Reminder fee posting {amount:.2f}"
     return f"Journal entry {amount:.2f}"
+
+
+def build_project_fallback(prompt: str) -> CreateProjectIntent | None:
+    if "project" not in prompt.lower() and "prosjekt" not in prompt.lower():
+        return None
+
+    project_name_match = re.search(r"[\"'“”‘’]([^\"'“”‘’]+)[\"'“”‘’]", prompt)
+    if not project_name_match:
+        return None
+    project_name = project_name_match.group(1).strip()
+    if not project_name:
+        return None
+
+    org_match = re.search(
+        r"\((?P<customer>[^()]+?),\s*(?:org(?:\.|anization)?(?:\s*no\.?|\s*nr\.?)?)\s*(?P<org>\d{9})\)",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    if not org_match:
+        return None
+
+    customer = InvoiceCustomerIntent(
+        name=org_match.group("customer").strip(),
+        organization_number=org_match.group("org").strip(),
+    )
+
+    email_match = re.search(r"([A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,})", prompt, flags=re.IGNORECASE)
+    manager_first_name: str | None = None
+    manager_last_name: str | None = None
+    if email_match:
+        leading_text = prompt[: email_match.start()]
+        name_match = re.search(r"([A-ZÆØÅÀ-ÿ][A-Za-zÆØÅæøåÀ-ÿ'’\-]+(?:\s+[A-ZÆØÅÀ-ÿ][A-Za-zÆØÅæøåÀ-ÿ'’\-]+)+)\s*\([^()]*$", leading_text)
+        if name_match:
+            manager_first_name, manager_last_name = split_person_name(name_match.group(1))
+
+    return CreateProjectIntent(
+        task_type="create_project",
+        name=project_name,
+        customer=customer,
+        project_manager_email=email_match.group(1) if email_match else None,
+        project_manager_first_name=manager_first_name,
+        project_manager_last_name=manager_last_name,
+    )
 
 
 def combine_execution_plans(plans: list[ExecutionPlan]) -> ExecutionPlan:

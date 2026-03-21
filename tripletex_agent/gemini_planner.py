@@ -1149,6 +1149,7 @@ def build_deterministic_intent(prompt: str) -> object | None:
         build_supplier_invoice_fallback,
         build_travel_expense_fallback,
         build_hours_invoice_fallback,
+        build_credit_note_fallback,
         build_fresh_invoice_state_fallback,
     ):
         intent = builder(prompt)
@@ -1604,9 +1605,41 @@ def build_fresh_invoice_state_fallback(prompt: str) -> CreateInvoiceIntent | Non
     )
 
 
+def build_credit_note_fallback(prompt: str) -> CreateInvoiceIntent | None:
+    lowered = normalize_text_for_match(prompt)
+    if not re.search(
+        r"(credit note|credit memo|kreditnota|kreditnote|nota de cr.?dito|note de cr.?dit)",
+        lowered,
+    ):
+        return None
+
+    customer = extract_invoice_customer(prompt)
+    if customer is None:
+        return None
+
+    description = extract_invoice_line_description(prompt)
+    amount = extract_invoice_line_amount(prompt)
+    if not description or amount is None:
+        return None
+
+    return CreateInvoiceIntent(
+        task_type="create_invoice",
+        customer=customer,
+        is_credit_note=True,
+        send_to_customer=False,
+        lines=[
+            {
+                "description": description,
+                "quantity": 1,
+                "unit_price_excluding_vat_currency": amount,
+            }
+        ],
+    )
+
+
 def extract_invoice_customer(prompt: str) -> InvoiceCustomerIntent | None:
     org_match = re.search(
-        r"(?P<name>[^()]{2,120}?)\s*\((?:[^)]*?)(?:org(?:\.|anization)?(?:\s*no\.?|\s*nr\.?)?)\s*(?P<org>\d{9})\)",
+        r"(?P<name>[^()]{2,120}?)\s*\((?:[^)]*?)(?:org(?:\.|anization)?[^0-9)]{0,16})(?P<org>\d{9})\)",
         prompt,
         flags=re.IGNORECASE,
     )

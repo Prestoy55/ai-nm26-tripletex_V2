@@ -275,6 +275,11 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
         return "department_batch_create"
     if any(token in normalized for token in ("project manager", "prosjektleder", "director del proyecto", "gerente de projeto")):
         return "project_create"
+    if re.search(
+        r"(credit note|credit memo|kreditnota|kreditnote|nota de cr.?dito|note de cr.?dit)",
+        normalized,
+    ):
+        return "credit_note"
     if any(token in normalized for token in ("register full payment", "registrer full betaling", "zahlung", "pagamento", "payment was returned", "reverser betalingen")):
         return "invoice_payment_flow"
     if any(token in normalized for token in ("exchange rate", "wechselkurs", "disagio", "agio")):

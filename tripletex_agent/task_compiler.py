@@ -826,7 +826,17 @@ def compile_create_invoice(intent: CreateInvoiceIntent) -> ExecutionPlan:
         ),
     ]
 
-    if intent.register_full_payment:
+    if intent.is_credit_note:
+        actions.append(
+            TaskAction(
+                id="create_credit_note",
+                description="Create a credit note that reverses the invoice",
+                method="PUT",
+                path="/invoice/{{create_invoice.value.id}}/:createCreditNote",
+                save_as="credit_note",
+            )
+        )
+    elif intent.register_full_payment:
         actions.extend(
             [
                 TaskAction(
@@ -855,11 +865,23 @@ def compile_create_invoice(intent: CreateInvoiceIntent) -> ExecutionPlan:
         )
 
     return ExecutionPlan(
-        goal=f"Create invoice for customer {intent.customer.name}",
+        goal=(
+            f"Create credit note for customer {intent.customer.name}"
+            if intent.is_credit_note
+            else f"Create invoice for customer {intent.customer.name}"
+        ),
         actions=actions,
         verification_notes=[
-            "Check customer, order, and invoice creation",
-            *(["Check invoice payment registration"] if intent.register_full_payment else []),
+            *(
+                ["Check customer, order, invoice, and credit note creation"]
+                if intent.is_credit_note
+                else ["Check customer, order, and invoice creation"]
+            ),
+            *(
+                ["Check invoice payment registration"]
+                if intent.register_full_payment and not intent.is_credit_note
+                else []
+            ),
         ],
     )
 

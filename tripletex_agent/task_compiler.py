@@ -474,6 +474,27 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
         )
     ]
 
+    customer_reference: dict[str, object] | None = None
+    if intent.customer_name or intent.customer_organization_number:
+        actions.append(
+            TaskAction(
+                id="create_voucher_customer",
+                description="Create the customer referenced by the voucher",
+                method="POST",
+                path="/customer",
+                body=prune_none(
+                    {
+                        "name": intent.customer_name or f"Customer {intent.customer_organization_number}",
+                        "organizationNumber": intent.customer_organization_number,
+                        "isCustomer": True,
+                        "isSupplier": False,
+                    }
+                ),
+                save_as="customer",
+            )
+        )
+        customer_reference = {"id": "{{create_voucher_customer.value.id}}"}
+
     supplier_reference: dict[str, object] | None = None
     if intent.supplier_invoice_details:
         actions.append(
@@ -546,6 +567,7 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
                             posting,
                             row=index,
                             voucher_date=voucher_date,
+                            customer_reference=customer_reference,
                             supplier_reference=supplier_reference,
                             department_action_ids=department_action_ids,
                         )
@@ -933,6 +955,7 @@ def compile_voucher_posting(
     *,
     row: int,
     voucher_date: str,
+    customer_reference: dict[str, object] | None = None,
     supplier_reference: dict[str, object] | None = None,
     department_action_ids: dict[str, str] | None = None,
 ) -> dict[str, object]:
@@ -945,6 +968,9 @@ def compile_voucher_posting(
             "amountGrossCurrency": signed_amount,
             "description": posting.description,
             "account": {"id": f"{{{{select_account_{posting.account_number}.id}}}}"},
+            "customer": customer_reference
+            if customer_reference and is_likely_customer_ledger_account(posting.account_number)
+            else None,
             "supplier": supplier_reference
             if supplier_reference and is_likely_supplier_ledger_account(posting.account_number)
             else None,
@@ -971,6 +997,10 @@ def compile_address(address: AddressInput) -> dict[str, object]:
 
 def is_likely_supplier_ledger_account(account_number: int) -> bool:
     return 2400 <= account_number <= 2499
+
+
+def is_likely_customer_ledger_account(account_number: int) -> bool:
+    return 1500 <= account_number <= 1599
 
 
 def summarize_travel_expense_entries(intent: CreateTravelExpenseIntent) -> str | None:

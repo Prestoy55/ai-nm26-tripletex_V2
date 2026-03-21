@@ -424,10 +424,14 @@ def normalize_customer_payload(payload: dict[str, object]) -> None:
     raw_postal_address = payload.get("postal_address")
     if isinstance(raw_postal_address, str):
         payload["postal_address"] = parse_address_string(raw_postal_address)
+    elif isinstance(raw_postal_address, dict):
+        normalize_address_payload(raw_postal_address)
 
     raw_physical_address = payload.get("physical_address")
     if isinstance(raw_physical_address, str):
         payload["physical_address"] = parse_address_string(raw_physical_address)
+    elif isinstance(raw_physical_address, dict):
+        normalize_address_payload(raw_physical_address)
 
     if any(value is not None for value in (address_line1, postal_code, city)):
         postal_address = payload.get("postal_address")
@@ -505,6 +509,8 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
 
 def normalize_product_payload(payload: dict[str, object]) -> None:
     alias_map = {
+        "product_name": "name",
+        "productName": "name",
         "product_number": "number",
         "productNumber": "number",
         "unit_price_excluding_vat_currency": "price_excluding_vat_currency",
@@ -632,6 +638,17 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
                 supplier_invoice_details["total_amount_including_vat"] = parsed_total_amount
         if supplier_invoice_details:
             payload["supplier_invoice_details"] = supplier_invoice_details
+
+    customer_aliases = {
+        "customer_name": "customer_name",
+        "client_name": "customer_name",
+        "customer_organization_number": "customer_organization_number",
+        "customer_org_number": "customer_organization_number",
+        "customer_orgnr": "customer_organization_number",
+    }
+    for alias, target in customer_aliases.items():
+        if alias in payload and target not in payload:
+            payload[target] = payload.pop(alias)
 
     if "amount" in payload and "postings" not in payload:
         debit_account = first_non_none(
@@ -786,6 +803,25 @@ def parse_address_string(value: str) -> dict[str, object]:
         }
 
     return {"address_line1": cleaned}
+
+
+def normalize_address_payload(payload: dict[str, object]) -> None:
+    country = payload.pop("country", None)
+    if "country_id" not in payload:
+        if isinstance(country, dict):
+            country_id = first_non_none(country.get("id"), country.get("country_id"))
+            if isinstance(country_id, (int, float)):
+                payload["country_id"] = int(country_id)
+            elif isinstance(country_id, str):
+                parsed_country_id = parse_numeric_string(country_id)
+                if parsed_country_id is not None:
+                    payload["country_id"] = int(parsed_country_id)
+        elif isinstance(country, (int, float)):
+            payload["country_id"] = int(country)
+        elif isinstance(country, str):
+            parsed_country_id = parse_numeric_string(country)
+            if parsed_country_id is not None:
+                payload["country_id"] = int(parsed_country_id)
 
 
 def split_person_name(value: str) -> tuple[str | None, str | None]:

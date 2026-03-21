@@ -287,6 +287,8 @@ class CreateVoucherIntent(BaseModel):
     task_type: Literal["create_voucher"]
     voucher_date: str | None = None
     description: str | None = None
+    customer_name: str | None = None
+    customer_organization_number: str | None = None
     supplier_invoice_details: SupplierInvoiceDetailsIntent | None = None
     postings: list[VoucherPostingIntent] = Field(default_factory=list)
 

@@ -235,7 +235,9 @@ def should_inline_attachment(mime_type: str, size_bytes: int, *, max_attachment_
 
 def normalize_intent_payload(payload: object) -> object:
     if isinstance(payload, list):
-        return [normalize_intent_payload(item) for item in payload]
+        normalized_items = [normalize_intent_payload(item) for item in payload]
+        normalize_intent_payload_list(normalized_items)
+        return normalized_items
 
     if not isinstance(payload, dict):
         return payload
@@ -677,8 +679,49 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
         if vat_type_id is not None:
             payload["vat_type_id"] = vat_type_id
 
-    for key in ("product_id", "productId", "product_number", "productNumber", "currency"):
+    for key in (
+        "product_id",
+        "productId",
+        "product_number",
+        "productNumber",
+        "currency",
+        "unit_price_currency",
+        "unitPriceCurrency",
+    ):
         payload.pop(key, None)
+
+
+def normalize_intent_payload_list(payloads: list[object]) -> None:
+    customer_names_by_org: dict[str, str] = {}
+
+    for item in payloads:
+        if not isinstance(item, dict):
+            continue
+        customer = item.get("customer")
+        if not isinstance(customer, dict):
+            continue
+        organization_number = customer.get("organization_number")
+        name = customer.get("name")
+        if isinstance(organization_number, str) and isinstance(name, str) and name.strip():
+            customer_names_by_org[organization_number.strip()] = name
+
+    if not customer_names_by_org:
+        return
+
+    for item in payloads:
+        if not isinstance(item, dict):
+            continue
+        customer = item.get("customer")
+        if not isinstance(customer, dict):
+            continue
+        if isinstance(customer.get("name"), str) and customer["name"].strip():
+            continue
+        organization_number = customer.get("organization_number")
+        if not isinstance(organization_number, str):
+            continue
+        inferred_name = customer_names_by_org.get(organization_number.strip())
+        if inferred_name:
+            customer["name"] = inferred_name
 
 
 def normalize_voucher_payload(payload: dict[str, object]) -> None:

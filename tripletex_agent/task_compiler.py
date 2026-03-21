@@ -694,7 +694,7 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
         )
         customer_reference = {"id": "{{create_project_customer.value.id}}"}
 
-    project_manager_reference = {"id": "{{find_project_manager.values.0.id}}"}
+    project_manager_reference: dict[str, object] | None = {"id": "{{find_project_manager.values.0.id}}"}
     if any(
         value
         for value in (
@@ -703,38 +703,7 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
             intent.project_manager_last_name,
         )
     ):
-        actions.extend(
-            [
-                TaskAction(
-                    id="get_departments_for_project_manager",
-                    description="Fetch an active department to satisfy employee create requirements",
-                    method="GET",
-                    path="/department",
-                    params={
-                        "count": 1,
-                        "isInactive": False,
-                        "fields": "id,name",
-                    },
-                ),
-                TaskAction(
-                    id="create_project_manager",
-                    description="Create the project manager employee when the prompt provides a named manager",
-                    method="POST",
-                    path="/employee",
-                    body=prune_none(
-                        {
-                            "firstName": intent.project_manager_first_name or "Project",
-                            "lastName": intent.project_manager_last_name or "Manager",
-                            "email": intent.project_manager_email,
-                            "userType": "STANDARD" if intent.project_manager_email else "NO_ACCESS",
-                            "department": {"id": "{{get_departments_for_project_manager.values.0.id}}"},
-                        }
-                    ),
-                    save_as="project_manager",
-                ),
-            ]
-        )
-        project_manager_reference = {"id": "{{create_project_manager.value.id}}"}
+        project_manager_reference = None
     else:
         actions.append(
             TaskAction(
@@ -778,6 +747,20 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
     notes = ["Check created project fields"]
     if intent.customer:
         notes.insert(0, "Check created customer fields")
+    if (
+        project_manager_reference is None
+        and any(
+            value
+            for value in (
+                intent.project_manager_email,
+                intent.project_manager_first_name,
+                intent.project_manager_last_name,
+            )
+        )
+    ):
+        notes.append(
+            "Project manager details were omitted from the API create step to avoid duplicate-user and permission failures"
+        )
 
     return ExecutionPlan(
         goal=f"Create project {intent.name}",

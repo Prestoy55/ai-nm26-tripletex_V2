@@ -11,7 +11,11 @@ from google.genai import types
 from tripletex_agent.models import ExecutionPlan, PreparedAttachment
 from tripletex_agent.planning_base import PlanningError, TaskPlanner
 from tripletex_agent.task_compiler import compile_task_intent
-from tripletex_agent.task_intents import SUPPORTED_TASK_INTENT_ADAPTER
+from tripletex_agent.task_intents import (
+    SUPPORTED_TASK_INTENT_ADAPTER,
+    CreateVoucherIntent,
+    VoucherPostingIntent,
+)
 
 _TEMPLATE = re.compile(r"{{\s*([^{}]+?)\s*}}")
 
@@ -153,6 +157,14 @@ class GeminiVertexPlanner(TaskPlanner):
                 "Gemini planner returned invalid task intent JSON: "
                 f"{exc}. Raw JSON: {truncate_text(text, limit=1200)}"
             ) from exc
+
+        if getattr(intent, "task_type", None) == "unsupported":
+            fallback_intent = build_explicit_voucher_fallback(prompt)
+            if fallback_intent is not None:
+                return compile_task_intent(
+                    fallback_intent,
+                    allow_beta_endpoints=self.allow_beta_endpoints,
+                )
 
         return compile_task_intent(intent, allow_beta_endpoints=self.allow_beta_endpoints)
 
@@ -832,6 +844,74 @@ def normalize_travel_expense_entry_list(payload: dict[str, object], key: str) ->
         normalized_entries.append(normalized_entry)
 
     payload[key] = normalized_entries
+
+
+def build_explicit_voucher_fallback(prompt: str) -> CreateVoucherIntent | None:
+    debit_match = re.search(
+        r"(?:debit(?:o|e)?|debet(?:er)?|debiter(?:a|e)?|debito)[^0-9]{0,40}\(?\s*(\d{4})\s*\)?",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    credit_match = re.search(
+        r"(?:credit(?:o)?|kredit(?:er)?|credito)[^0-9]{0,40}\(?\s*(\d{4})\s*\)?",
+        prompt,
+        flags=re.IGNORECASE,
+    )
+    if not debit_match or not credit_match:
+        return None
+
+    amount = extract_explicit_voucher_amount(prompt)
+    if amount is None:
+        return None
+
+    description = infer_voucher_description(prompt, amount)
+    return CreateVoucherIntent(
+        task_type="create_voucher",
+        voucher_date=date.today().isoformat(),
+        description=description,
+        postings=[
+            VoucherPostingIntent(
+                account_number=int(debit_match.group(1)),
+                entry_type="DEBIT",
+                amount=amount,
+            ),
+            VoucherPostingIntent(
+                account_number=int(credit_match.group(1)),
+                entry_type="CREDIT",
+                amount=amount,
+            ),
+        ],
+    )
+
+
+def extract_explicit_voucher_amount(prompt: str) -> float | None:
+    prioritized_patterns = [
+        r"(?:reminder|recordatorio|påminn(?:else|ingsgebyr)|rappel|mahn(?:gebühr|ung)|fee)[^0-9]{0,40}(\d[\d\s.,]*)\s*(?:NOK|kr)\b",
+        r"(\d[\d\s.,]*)\s*(?:NOK|kr)\b[^.]{0,80}(?:debit(?:o|e)?|debet|credit(?:o)?|kredit)",
+    ]
+    for pattern in prioritized_patterns:
+        match = re.search(pattern, prompt, flags=re.IGNORECASE)
+        if not match:
+            continue
+        parsed = parse_numeric_string(match.group(1))
+        if parsed is not None:
+            return parsed
+
+    amounts = [
+        parse_numeric_string(match.group(1))
+        for match in re.finditer(r"(\d[\d\s.,]*)\s*(?:NOK|kr)\b", prompt, flags=re.IGNORECASE)
+    ]
+    amounts = [amount for amount in amounts if amount is not None]
+    if len(amounts) == 1:
+        return amounts[0]
+    return None
+
+
+def infer_voucher_description(prompt: str, amount: float) -> str:
+    lowered = prompt.lower()
+    if any(token in lowered for token in ("reminder", "recordatorio", "påminn", "rappel", "mahn")):
+        return f"Reminder fee posting {amount:.2f}"
+    return f"Journal entry {amount:.2f}"
 
 
 def combine_execution_plans(plans: list[ExecutionPlan]) -> ExecutionPlan:

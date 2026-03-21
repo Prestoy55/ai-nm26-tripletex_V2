@@ -313,6 +313,11 @@ def normalize_intent_payload(payload: object) -> object:
         if "credit_note" in payload and "is_credit_note" not in payload:
             payload["is_credit_note"] = payload.pop("credit_note")
 
+        if "customer_details" in payload and "customer" not in payload:
+            payload["customer"] = payload.pop("customer_details")
+        if "customerDetails" in payload and "customer" not in payload:
+            payload["customer"] = payload.pop("customerDetails")
+
         customer = payload.get("customer")
         if isinstance(customer, dict):
             normalize_customer_payload(customer)
@@ -725,6 +730,8 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
         )
         if vat_type_id is not None:
             payload["vat_type_id"] = vat_type_id
+
+    payload.pop("currency", None)
 
     for key in (
         "product_id",

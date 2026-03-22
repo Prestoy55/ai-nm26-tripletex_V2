@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 import unicodedata
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from google import genai
 from google.genai import types
 
-from tripletex_agent.models import ExecutionPlan, PreparedAttachment
+from tripletex_agent.models import ExecutionPlan, PreparedAttachment, TaskAction
 from tripletex_agent.planning_base import PlanningError, TaskPlanner
 from tripletex_agent.task_compiler import compile_task_intent
 from tripletex_agent.task_intents import (
@@ -111,6 +113,10 @@ class GeminiVertexPlanner(TaskPlanner):
         self.allow_beta_endpoints = allow_beta_endpoints
 
     def build_plan(self, prompt: str, attachments: list[PreparedAttachment]) -> ExecutionPlan:
+        deterministic_plan = build_deterministic_plan(prompt, attachments)
+        if deterministic_plan is not None:
+            return deterministic_plan
+
         deterministic_intent = build_deterministic_intent(prompt)
         if deterministic_intent is not None:
             return compile_task_intent(
@@ -174,6 +180,9 @@ class GeminiVertexPlanner(TaskPlanner):
             ) from exc
 
         if getattr(intent, "task_type", None) == "unsupported":
+            bank_reconciliation_plan = build_bank_reconciliation_fallback(prompt, attachments)
+            if bank_reconciliation_plan is not None:
+                return bank_reconciliation_plan
             fallback_intent = build_explicit_voucher_fallback(prompt)
             if fallback_intent is not None:
                 return compile_task_intent(
@@ -1324,6 +1333,525 @@ def build_deterministic_intent(prompt: str) -> object | None:
         if intent is not None:
             return intent
     return None
+
+
+def build_deterministic_plan(
+    prompt: str,
+    attachments: list[PreparedAttachment],
+) -> ExecutionPlan | None:
+    return build_bank_reconciliation_fallback(prompt, attachments)
+
+
+def build_bank_reconciliation_fallback(
+    prompt: str,
+    attachments: list[PreparedAttachment],
+) -> ExecutionPlan | None:
+    if not is_bank_reconciliation_prompt(prompt, attachments):
+        return None
+
+    csv_text = extract_csv_attachment_text(attachments)
+    if not csv_text:
+        return None
+
+    parsed_rows = parse_bank_statement_rows(csv_text)
+    if not parsed_rows:
+        return None
+
+    incoming_groups, outgoing_groups = group_bank_statement_rows(parsed_rows)
+    incoming_groups = incoming_groups[:3]
+    outgoing_groups = outgoing_groups[:2]
+    if not incoming_groups and not outgoing_groups:
+        return None
+
+    actions: list[TaskAction] = []
+    verification_notes = ["Check synthesized invoice and payment matches from the bank statement"]
+
+    if incoming_groups:
+        actions.append(
+            TaskAction(
+                id="find_invoice_payment_type",
+                description="Find the standard bank invoice payment type",
+                method="GET",
+                path="/invoice/paymentType",
+                params={
+                    "name": "Betalt til bank",
+                    "count": 1,
+                    "fields": "id",
+                },
+            )
+        )
+
+    if outgoing_groups:
+        actions.append(
+            TaskAction(
+                id="list_ledger_accounts",
+                description="Fetch chart of accounts for supplier payment vouchers",
+                method="GET",
+                path="/ledger/account",
+                params={
+                    "count": 10000,
+                    "fields": "id,number,name,ledgerType,vatType(id),legalVatTypes(id),vatLocked",
+                },
+            )
+        )
+        for account_number in (1920, 2400):
+            actions.append(
+                TaskAction(
+                    id=f"select_account_{account_number}",
+                    description=f"Select ledger account {account_number}",
+                    method="SELECT",
+                    path="select",
+                    body={
+                        "source": "{{list_ledger_accounts.values}}",
+                        "criteria": {"number": account_number},
+                    },
+                )
+            )
+        verification_notes.append("Check synthesized supplier payment vouchers from the bank statement")
+
+    for index, row in enumerate(incoming_groups, start=1):
+        customer_action = f"bank_create_customer_{index}"
+        order_action = f"bank_create_order_{index}"
+        invoice_action = f"bank_create_invoice_{index}"
+        payment_action = f"bank_register_payment_{index}"
+        customer_name = row["name"]
+        invoice_date = row["date"]
+        line_description = row["description"]
+
+        actions.extend(
+            [
+                TaskAction(
+                    id=customer_action,
+                    description=f"Create customer {customer_name} from bank statement row",
+                    method="POST",
+                    path="/customer",
+                    body={
+                        "name": customer_name,
+                        "isCustomer": True,
+                        "isSupplier": False,
+                    },
+                    save_as=f"bank_customer_{index}",
+                ),
+                TaskAction(
+                    id=order_action,
+                    description=f"Create order for reconciled payment from {customer_name}",
+                    method="POST",
+                    path="/order",
+                    body={
+                        "customer": {"id": f"{{{{{customer_action}.value.id}}}}"},
+                        "orderDate": invoice_date,
+                        "deliveryDate": invoice_date,
+                        "isPrioritizeAmountsIncludingVat": False,
+                        "orderLines": [
+                            {
+                                "description": line_description,
+                                "count": 1,
+                                "unitPriceExcludingVatCurrency": row["amount"],
+                                "vatType": {"id": 5},
+                            }
+                        ],
+                    },
+                    save_as=f"bank_order_{index}",
+                ),
+                TaskAction(
+                    id=invoice_action,
+                    description=f"Create invoice for reconciled payment from {customer_name}",
+                    method="POST",
+                    path="/invoice",
+                    params={"sendToCustomer": False},
+                    body={
+                        "invoiceDate": invoice_date,
+                        "invoiceDueDate": invoice_date,
+                        "customer": {"id": f"{{{{{customer_action}.value.id}}}}"},
+                        "orders": [{"id": f"{{{{{order_action}.value.id}}}}"}],
+                    },
+                    save_as=f"bank_invoice_{index}",
+                ),
+                TaskAction(
+                    id=payment_action,
+                    description=f"Register reconciled incoming payment from {customer_name}",
+                    method="PUT",
+                    path=f"/invoice/{{{{{invoice_action}.value.id}}}}/:payment",
+                    params={
+                        "paymentDate": invoice_date,
+                        "paymentTypeId": "{{find_invoice_payment_type.values.0.id}}",
+                        "paidAmount": f"{{{{{invoice_action}.value.amount}}}}",
+                    },
+                ),
+            ]
+        )
+
+    for index, row in enumerate(outgoing_groups, start=1):
+        supplier_action = f"bank_create_supplier_{index}"
+        voucher_action = f"bank_create_supplier_payment_voucher_{index}"
+        supplier_name = row["name"]
+        voucher_date = row["date"]
+        description = row["description"]
+        amount = row["amount"]
+        actions.extend(
+            [
+                TaskAction(
+                    id=supplier_action,
+                    description=f"Create supplier {supplier_name} from bank statement row",
+                    method="POST",
+                    path="/customer",
+                    body={
+                        "name": supplier_name,
+                        "isCustomer": False,
+                        "isSupplier": True,
+                    },
+                    save_as=f"bank_supplier_{index}",
+                ),
+                TaskAction(
+                    id=voucher_action,
+                    description=f"Create supplier payment voucher for {supplier_name}",
+                    method="POST",
+                    path="/ledger/voucher",
+                    body={
+                        "date": voucher_date,
+                        "description": description,
+                        "postings": [
+                            {
+                                "row": 1,
+                                "date": voucher_date,
+                                "amountGross": amount,
+                                "amountGrossCurrency": amount,
+                                "description": description,
+                                "account": {"id": "{{select_account_2400.id}}"},
+                                "supplier": {"id": f"{{{{{supplier_action}.value.id}}}}"},
+                            },
+                            {
+                                "row": 2,
+                                "date": voucher_date,
+                                "amountGross": -amount,
+                                "amountGrossCurrency": -amount,
+                                "description": description,
+                                "account": {"id": "{{select_account_1920.id}}"},
+                            },
+                        ],
+                    },
+                    save_as=f"bank_voucher_{index}",
+                ),
+            ]
+        )
+
+    goal_parts: list[str] = []
+    if incoming_groups:
+        goal_parts.append(f"Match {len(incoming_groups)} incoming bank payment groups")
+    if outgoing_groups:
+        goal_parts.append(f"Match {len(outgoing_groups)} outgoing supplier payment groups")
+
+    return ExecutionPlan(
+        goal="; ".join(goal_parts) or "Reconcile bank statement entries",
+        actions=actions,
+        verification_notes=verification_notes,
+    )
+
+
+def is_bank_reconciliation_prompt(prompt: str, attachments: list[PreparedAttachment]) -> bool:
+    normalized = normalize_text_for_match(prompt)
+    has_csv = any(
+        attachment.mime_type == "text/csv" or attachment.filename.lower().endswith(".csv")
+        for attachment in attachments
+    )
+    if not has_csv:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "bank statement",
+            "bankutskrift",
+            "bankutskrifta",
+            "releve bancaire",
+            "extrato bancario",
+            "reconcile",
+            "reconcilez",
+            "reconcile",
+            "avstem",
+            "rapprochez",
+        )
+    )
+
+
+def extract_csv_attachment_text(attachments: list[PreparedAttachment]) -> str | None:
+    for attachment in attachments:
+        if attachment.mime_type == "text/csv" or attachment.filename.lower().endswith(".csv"):
+            if isinstance(attachment.extracted_text, str) and attachment.extracted_text.strip():
+                return attachment.extracted_text
+    return None
+
+
+def parse_bank_statement_rows(csv_text: str) -> list[dict[str, object]]:
+    try:
+        dialect = csv.Sniffer().sniff(csv_text[:4096], delimiters=";,\t|")
+    except csv.Error:
+        dialect = csv.excel
+        dialect.delimiter = ";" if csv_text.count(";") >= csv_text.count(",") else ","
+
+    reader = csv.DictReader(io.StringIO(csv_text), dialect=dialect)
+    if not reader.fieldnames:
+        return []
+
+    rows: list[dict[str, object]] = []
+    for raw_row in reader:
+        if not raw_row:
+            continue
+        normalized_row = {
+            normalize_csv_header(str(key)): (value or "").strip()
+            for key, value in raw_row.items()
+            if key is not None
+        }
+        parsed_amount = extract_bank_row_amount(normalized_row)
+        if parsed_amount is None or parsed_amount == 0:
+            continue
+
+        date_value = extract_bank_row_date(normalized_row) or date.today().isoformat()
+        description = extract_bank_row_description(normalized_row)
+        if not description:
+            description = f"Bank statement entry {len(rows) + 1}"
+        invoice_reference = extract_bank_invoice_reference(description)
+        counterparty = extract_bank_counterparty_name(normalized_row, description, invoice_reference)
+        if not counterparty:
+            counterparty = (
+                f"Customer {invoice_reference}"
+                if parsed_amount > 0 and invoice_reference
+                else ("Bank statement customer" if parsed_amount > 0 else "Bank statement supplier")
+            )
+
+        rows.append(
+            {
+                "date": date_value,
+                "amount": round(abs(parsed_amount), 2),
+                "direction": "incoming" if parsed_amount > 0 else "outgoing",
+                "description": invoice_reference and f"{description} ({invoice_reference})" or description,
+                "invoice_reference": invoice_reference,
+                "name": counterparty,
+            }
+        )
+
+    return rows
+
+
+def group_bank_statement_rows(
+    rows: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    grouped: dict[tuple[str, str], dict[str, object]] = {}
+    for row in rows:
+        direction = str(row["direction"])
+        invoice_reference = str(row.get("invoice_reference") or "").strip()
+        name = str(row.get("name") or "").strip()
+        description = str(row.get("description") or "").strip()
+        key = (
+            direction,
+            invoice_reference or name or description[:80],
+        )
+        current = grouped.get(key)
+        if current is None:
+            grouped[key] = dict(row)
+            continue
+        current["amount"] = round(float(current["amount"]) + float(row["amount"]), 2)
+        if not current.get("invoice_reference") and invoice_reference:
+            current["invoice_reference"] = invoice_reference
+        if len(description) > len(str(current.get("description") or "")):
+            current["description"] = description
+
+    incoming = [row for row in grouped.values() if row["direction"] == "incoming"]
+    outgoing = [row for row in grouped.values() if row["direction"] == "outgoing"]
+    return incoming, outgoing
+
+
+def normalize_csv_header(value: str) -> str:
+    normalized = normalize_text_for_match(value)
+    normalized = re.sub(r"[^a-z0-9]+", "_", normalized).strip("_")
+    return normalized
+
+
+def extract_bank_row_amount(row: dict[str, str]) -> float | None:
+    debit_value = extract_first_matching_value(
+        row,
+        (
+            "debit",
+            "debet",
+            "ut",
+            "withdrawal",
+            "amount_out",
+            "paid_out",
+        ),
+    )
+    credit_value = extract_first_matching_value(
+        row,
+        (
+            "credit",
+            "kredit",
+            "inn",
+            "deposit",
+            "amount_in",
+            "paid_in",
+        ),
+    )
+
+    if credit_value:
+        parsed_credit = parse_bank_numeric(credit_value)
+        if parsed_credit not in (None, 0):
+            return parsed_credit
+    if debit_value:
+        parsed_debit = parse_bank_numeric(debit_value)
+        if parsed_debit not in (None, 0):
+            return -parsed_debit
+
+    amount_value = extract_first_matching_value(
+        row,
+        (
+            "amount",
+            "belop",
+            "sum",
+            "transaction_amount",
+            "amount_nok",
+            "value",
+        ),
+    )
+    if not amount_value:
+        return None
+    return parse_bank_numeric(amount_value)
+
+
+def extract_bank_row_date(row: dict[str, str]) -> str | None:
+    date_value = extract_first_matching_value(
+        row,
+        (
+            "date",
+            "dato",
+            "datum",
+            "booking_date",
+            "transaction_date",
+            "posted_date",
+            "booked_date",
+        ),
+    )
+    if not date_value:
+        return None
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(date_value.strip(), fmt).date().isoformat()
+        except ValueError:
+            continue
+    match = re.search(r"(\d{4})-(\d{2})-(\d{2})", date_value)
+    if match:
+        return match.group(0)
+    return None
+
+
+def extract_bank_row_description(row: dict[str, str]) -> str | None:
+    pieces: list[str] = []
+    for key, value in row.items():
+        if not value:
+            continue
+        if any(
+            token in key
+            for token in (
+                "description",
+                "text",
+                "details",
+                "memo",
+                "message",
+                "reference",
+                "beskrivelse",
+                "tekst",
+                "melding",
+                "narrative",
+                "account_name",
+                "counterparty",
+                "payee",
+                "payer",
+                "customer",
+                "supplier",
+                "name",
+            )
+        ):
+            cleaned = value.strip()
+            if cleaned and cleaned not in pieces:
+                pieces.append(cleaned)
+    combined = " | ".join(pieces).strip(" |")
+    return combined or None
+
+
+def extract_bank_invoice_reference(description: str) -> str | None:
+    match = re.search(
+        r"(?:invoice|inv|faktura|facture|factura|fatura)\s*#?:?\s*([A-Z0-9][A-Z0-9/-]+)",
+        description,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def extract_bank_counterparty_name(
+    row: dict[str, str],
+    description: str,
+    invoice_reference: str | None,
+) -> str | None:
+    explicit_name = extract_first_matching_value(
+        row,
+        (
+            "counterparty",
+            "payee",
+            "payer",
+            "customer",
+            "supplier",
+            "name",
+            "account_name",
+        ),
+    )
+    if explicit_name:
+        return clean_bank_counterparty_name(explicit_name, invoice_reference)
+    return clean_bank_counterparty_name(description, invoice_reference)
+
+
+def clean_bank_counterparty_name(value: str, invoice_reference: str | None) -> str | None:
+    cleaned = value
+    if invoice_reference:
+        cleaned = cleaned.replace(invoice_reference, " ")
+    cleaned = re.sub(
+        r"(?:invoice|inv|faktura|facture|factura|fatura|betaling|payment|paid|received|incoming|outgoing|bank)",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"[^A-Za-zÀ-ÿ0-9&.'’/ -]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" -|,")
+    if not cleaned:
+        return None
+    words = cleaned.split()
+    if len(words) > 6:
+        cleaned = " ".join(words[:6])
+    return cleaned or None
+
+
+def extract_first_matching_value(row: dict[str, str], tokens: tuple[str, ...]) -> str | None:
+    for key, value in row.items():
+        if not value:
+            continue
+        if any(token in key for token in tokens):
+            return value
+    return None
+
+
+def parse_bank_numeric(value: str) -> float | None:
+    cleaned = re.sub(r"[^0-9,.\-]", "", value.strip())
+    if not cleaned:
+        return None
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
 
 
 def build_explicit_voucher_fallback(prompt: str) -> CreateVoucherIntent | None:

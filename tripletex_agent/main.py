@@ -214,6 +214,8 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
             "custom accounting dimension",
             "dimension libre",
             "dimension contable",
+            "dimension comptable",
+            "dimension comptable personnalisee",
         )
     ):
         return "custom_accounting_dimension"

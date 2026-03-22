@@ -582,6 +582,26 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
         )
 
     for account_number in unique_account_numbers:
+        if account_number == 1209:
+            actions.append(
+                TaskAction(
+                    id="select_account_1209",
+                    description="Ensure accumulated depreciation account 1209 exists",
+                    method="ENSURE_ACCOUNT",
+                    path="/ledger/account",
+                    body={
+                        "source": "{{list_ledger_accounts.values}}",
+                        "number": 1209,
+                        "create_body": {
+                            "number": 1209,
+                            "name": "Akkumulerte avskrivninger",
+                            "ledgerType": "GENERAL",
+                        },
+                    },
+                )
+            )
+            continue
+
         actions.append(
             TaskAction(
                 id=f"select_account_{account_number}",

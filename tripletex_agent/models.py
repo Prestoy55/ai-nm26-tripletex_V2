@@ -85,7 +85,7 @@ class TaskAction(BaseModel):
 
     id: str = Field(pattern=r"^[A-Za-z0-9_-]+$")
     description: str
-    method: Literal["GET", "POST", "PUT", "DELETE", "SELECT"]
+    method: Literal["GET", "POST", "PUT", "DELETE", "SELECT", "ENSURE_ACCOUNT"]
     path: str
     params: dict[str, Any] = Field(default_factory=dict)
     body: Any = None

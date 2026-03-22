@@ -43,6 +43,27 @@ class PlanExecutor:
                     )
                     continue
 
+                if action.method == "ENSURE_ACCOUNT":
+                    status_code, response_payload = run_ensure_account_action(
+                        self.client,
+                        action.id,
+                        resolved_path,
+                        resolved_body,
+                    )
+                    context[action.id] = response_payload
+                    if action.save_as:
+                        context[action.save_as] = response_payload
+                    results.append(
+                        ActionResult(
+                            action_id=action.id,
+                            method=action.method,
+                            path=resolved_path,
+                            status_code=status_code,
+                            response=response_payload,
+                        )
+                    )
+                    continue
+
                 if not isinstance(resolved_path, str):
                     raise PlanExecutionError(f"Resolved path for action {action.id} must be a string")
 
@@ -170,6 +191,46 @@ def run_select_action(action_id: str, payload: Any) -> Any:
     if len(matches) > 1:
         raise PlanExecutionError(f"SELECT action {action_id} found multiple matching items")
     return matches[0]
+
+
+def run_ensure_account_action(
+    client: TripletexClient,
+    action_id: str,
+    path: Any,
+    payload: Any,
+) -> tuple[int, Any]:
+    if not isinstance(path, str):
+        raise PlanExecutionError(f"ENSURE_ACCOUNT action {action_id} requires a string path")
+    if not isinstance(payload, dict):
+        raise PlanExecutionError(f"ENSURE_ACCOUNT action {action_id} requires an object body")
+
+    source = payload.get("source")
+    account_number = payload.get("number")
+    create_body = payload.get("create_body")
+
+    if not isinstance(source, list):
+        raise PlanExecutionError(f"ENSURE_ACCOUNT action {action_id} requires body.source to be a list")
+    if not isinstance(account_number, int):
+        raise PlanExecutionError(f"ENSURE_ACCOUNT action {action_id} requires body.number to be an integer")
+    if not isinstance(create_body, dict):
+        raise PlanExecutionError(f"ENSURE_ACCOUNT action {action_id} requires body.create_body to be an object")
+
+    matches = [
+        item
+        for item in source
+        if isinstance(item, dict) and values_match(select_value(item, "number"), account_number)
+    ]
+    if len(matches) == 1:
+        return 0, matches[0]
+    if len(matches) > 1:
+        raise PlanExecutionError(
+            f"ENSURE_ACCOUNT action {action_id} found multiple matching accounts for {account_number}"
+        )
+
+    status_code, response_payload = client.request("POST", path, json_body=create_body)
+    if isinstance(response_payload, dict) and isinstance(response_payload.get("value"), dict):
+        return status_code, response_payload["value"]
+    return status_code, response_payload
 
 
 def select_value(payload: Any, path: str) -> Any:

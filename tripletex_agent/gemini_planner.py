@@ -969,6 +969,7 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
         "supplier_org_number": "organization_number",
         "supplier_orgnr": "organization_number",
         "supplier_address": "supplier_address",
+        "supplier_invoice_number": "invoice_number",
         "invoice_number": "invoice_number",
         "external_id": "invoice_number",
         "invoice_date": "invoice_date",

@@ -124,76 +124,82 @@ The Gemini path now extracts a supported typed task intent, then deterministic c
 
 ## Current Task Coverage
 
-Implemented first-pass support:
+Implemented support now includes:
 
 - create employee
-- create customer
+- update employee
+- create customer and supplier
 - update customer
 - create product
-- update employee
-- create department
-- delete department
+- create and delete department
 - create voucher
-- create travel expense
-- delete travel expense
+- create and delete travel expense
 - create project
 - create invoice
+- register full payment on freshly created invoices
+- create credit notes
+- register supplier invoices through deterministic voucher postings
+- register receipt vouchers from attachments
+- heuristic bank reconciliation from CSV attachments in fresh sandboxes
+- ledger correction and month-end/year-end voucher corrections when the prompt provides enough explicit accounting details
 
 Current invoice flow is canonical:
 
 1. create customer
 2. create order
 3. create invoice from the order
+4. optionally register full payment
+
+If a prompt asks to send an invoice and Tripletex rejects `sendToCustomer=true` because the sandbox company has no registered bank account, the executor retries with `sendToCustomer=false`.
 
 Current employee flow is safe-by-default:
 
 1. create employee
 2. only grant entitlement templates through `/employee/entitlement/:grantEntitlementsByTemplate` when beta endpoints are explicitly enabled
 
-Still unsupported in the current code:
-
-- delete/reverse flows
-- travel expense attachment workflows
-- module setup tasks
-- payment registration and credit notes
-- ledger analysis and voucher correction workflows
-
-Current voucher flow is explicit-only:
+Current voucher flow is deterministic:
 
 1. fetch chart of accounts
 2. resolve account IDs locally by account number
-3. create a balanced voucher through `/ledger/voucher`
+3. ensure known missing accounts such as `1209` and `6030` exist when needed
+4. synthesize required employee, customer, supplier, and department references
+5. create a balanced voucher through `/ledger/voucher`
 
-This is intended for prompts that already specify debit/credit account numbers and amounts, such as accruals,
-depreciation, provisions, and other direct journal entries.
+Still unsupported or only partially supported:
+
+- analytical discovery tasks that require reading the ledger and deciding what to do from the results, such as "find the 3 cost accounts with the largest increase"
+- custom accounting dimensions and posting vouchers against custom dimension values
+- reconciliation against pre-existing open invoices that cannot be reconstructed in a fresh sandbox
+- some invoice flows in fresh sandboxes where Tripletex rejects `/invoice` because the company lacks required bank-account setup
 
 ## Live Validation
 
-Live sandbox validation completed on March 20, 2026:
+Recent live sandbox validation through March 22, 2026 showed successful runs for:
 
-- employee creation succeeded
-- employee admin entitlement grant succeeded in sandbox when beta endpoints were enabled
-- customer creation succeeded
-- product creation succeeded
-- department creation succeeded
-- department deletion succeeded
-- travel expense creation succeeded with minimal title plus employee flow, and with optional travel details
-- travel expense deletion succeeded by matching title plus employee fields through local selection
-- customer update succeeded
-- project creation succeeded after assigning a project manager and defaulting startDate
-- employee update succeeded when the prompt supplied a birth date for a target employee missing dateOfBirth
+- employee creation and onboarding-from-document flows
+- customer and supplier registration
+- product creation
+- department creation and deletion
+- project creation, including fixed-price projects
+- travel expense creation and deletion
+- supplier invoice registration
+- receipt voucher registration from attachments
+- invoice creation and full-payment registration
+- returned-payment reversal by reconstructing fresh invoice state
+- bank reconciliation fallback from CSV attachments
+- ledger correction through deterministic corrective vouchers
 
-Local validation completed on March 21, 2026:
+Recent local validation additionally confirmed:
 
-- explicit `create_voucher` intents now normalize and compile into `GET /ledger/account` plus `POST /ledger/voucher`
+- project creation now uses Tripletex's `fixedprice` field
+- German bank-reconciliation prompts route into the deterministic CSV fallback
+- string boolean and invoice-line alias normalization for multilingual planner payloads
 
-Observed sandbox-specific blocker on March 20, 2026:
+Observed sandbox-specific blocker:
 
-- invoice creation reached `POST /invoice`, but the sandbox rejected it because the company did not have a registered bank account number
-- replaying the same invoice flow with `sendToCustomer=false` on March 21, 2026 still produced the same bank-account validation error
+- some fresh sandbox companies still reject `POST /invoice` with `Faktura kan ikke opprettes før selskapet har registrert et bankkontonummer`
+- retrying `sendToCustomer=true` as `sendToCustomer=false` fixes the “send invoice” variant, but some plain invoice-creation prompts still fail if the sandbox company itself is not sufficiently configured
 - updating a sandbox-created employee without an existing birth date still fails unless the prompt provides a birth date, because Tripletex validates `dateOfBirth` on update
-
-That means the invoice compiler path is structurally working through customer and order creation, but full invoice validation still depends on resolving company-level invoicing prerequisites in the sandbox.
 
 ## Local Development
 

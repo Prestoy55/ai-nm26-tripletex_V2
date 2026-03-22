@@ -870,6 +870,12 @@ def compile_create_invoice(intent: CreateInvoiceIntent) -> ExecutionPlan:
                 description="Create a credit note that reverses the invoice",
                 method="PUT",
                 path="/invoice/{{create_invoice.value.id}}/:createCreditNote",
+                params=prune_none(
+                    {
+                        "date": invoice_date,
+                        "comment": intent.invoice_comment,
+                    }
+                ),
                 save_as="credit_note",
             )
         )

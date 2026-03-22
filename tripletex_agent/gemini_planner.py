@@ -920,6 +920,46 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
     if not isinstance(supplier_invoice_details, dict):
         supplier_invoice_details = {}
 
+    supplier_details = payload.pop("supplier_details", None)
+    if supplier_details is None:
+        supplier_details = payload.pop("supplierDetails", None)
+    if isinstance(supplier_details, dict):
+        supplier_name = first_non_none(
+            supplier_details.get("supplier_name"),
+            supplier_details.get("name"),
+            supplier_details.get("supplierName"),
+        )
+        if isinstance(supplier_name, str) and "supplier_name" not in supplier_invoice_details:
+            supplier_invoice_details["supplier_name"] = supplier_name
+        supplier_org = first_non_none(
+            supplier_details.get("organization_number"),
+            supplier_details.get("org_number"),
+            supplier_details.get("orgnr"),
+            supplier_details.get("organizationNumber"),
+        )
+        if isinstance(supplier_org, str) and "organization_number" not in supplier_invoice_details:
+            supplier_invoice_details["organization_number"] = supplier_org
+        supplier_address = first_non_none(
+            supplier_details.get("supplier_address"),
+            supplier_details.get("address"),
+        )
+        postal_address = supplier_details.get("postal_address")
+        if supplier_address is None and isinstance(postal_address, dict):
+            normalize_address_payload(postal_address)
+            supplier_address = ", ".join(
+                str(part).strip()
+                for part in (
+                    postal_address.get("address_line1"),
+                    postal_address.get("postal_code"),
+                    postal_address.get("city"),
+                )
+                if isinstance(part, str) and part.strip()
+            ) or None
+        elif supplier_address is None and isinstance(postal_address, str):
+            supplier_address = postal_address.strip()
+        if isinstance(supplier_address, str) and supplier_address.strip() and "supplier_address" not in supplier_invoice_details:
+            supplier_invoice_details["supplier_address"] = supplier_address.strip()
+
     supplier_aliases = {
         "supplier_name": "supplier_name",
         "vendor_name": "supplier_name",

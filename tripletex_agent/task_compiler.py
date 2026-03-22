@@ -552,17 +552,30 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
         customer_reference = {"id": "{{create_voucher_customer.value.id}}"}
 
     supplier_reference: dict[str, object] | None = None
-    if intent.supplier_invoice_details:
+    requires_supplier_reference = any(
+        is_likely_supplier_ledger_account(posting.account_number) for posting in intent.postings
+    )
+    if intent.supplier_invoice_details or requires_supplier_reference:
+        supplier_name = (
+            intent.supplier_invoice_details.supplier_name
+            if intent.supplier_invoice_details
+            else "Voucher supplier"
+        )
+        supplier_organization_number = (
+            intent.supplier_invoice_details.organization_number
+            if intent.supplier_invoice_details
+            else None
+        )
         actions.append(
             TaskAction(
                 id="create_voucher_supplier",
-                description="Create the supplier referenced by the supplier invoice",
+                description="Create the supplier referenced by the voucher",
                 method="POST",
                 path="/customer",
                 body=prune_none(
                     {
-                        "name": intent.supplier_invoice_details.supplier_name,
-                        "organizationNumber": intent.supplier_invoice_details.organization_number,
+                        "name": supplier_name,
+                        "organizationNumber": supplier_organization_number,
                         "isCustomer": False,
                         "isSupplier": True,
                     }

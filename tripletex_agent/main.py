@@ -356,7 +356,19 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
         return "invoice_payment_flow"
     if any(token in normalized for token in ("exchange rate", "wechselkurs", "disagio", "agio")):
         return "foreign_currency_payment"
-    if any(token in normalized for token in ("find de 4 errors", "finn de 4 feilene", "revise todos os vouchers", "hauptbuch", "livro razao")):
+    if any(
+        token in normalized
+        for token in (
+            "find de 4 errors",
+            "find the 4 errors",
+            "review all vouchers",
+            "general ledger",
+            "finn de 4 feilene",
+            "revise todos os vouchers",
+            "hauptbuch",
+            "livro razao",
+        )
+    ):
         return "ledger_correction"
     if any(
         token in normalized

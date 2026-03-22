@@ -1012,6 +1012,23 @@ def normalize_voucher_payload(payload: dict[str, object]) -> None:
         return
 
     for posting in postings:
+        if not isinstance(posting, dict):
+            continue
+        posting_customer_name = first_non_none(
+            posting.get("customer_name"),
+            posting.get("client_name"),
+        )
+        if isinstance(posting_customer_name, str) and "customer_name" not in payload:
+            payload["customer_name"] = posting_customer_name
+        posting_customer_org = first_non_none(
+            posting.get("customer_organization_number"),
+            posting.get("customer_org_number"),
+            posting.get("customer_orgnr"),
+        )
+        if isinstance(posting_customer_org, str) and "customer_organization_number" not in payload:
+            payload["customer_organization_number"] = posting_customer_org
+
+    for posting in postings:
         if isinstance(posting, dict):
             normalize_voucher_posting_payload(posting)
 
@@ -1093,6 +1110,15 @@ def normalize_voucher_posting_payload(payload: dict[str, object]) -> None:
             department_name.get("name"),
             department_name.get("department_name"),
         )
+
+    for key in (
+        "customer_name",
+        "client_name",
+        "customer_organization_number",
+        "customer_org_number",
+        "customer_orgnr",
+    ):
+        payload.pop(key, None)
 
 
 def first_non_none(*values: object) -> object | None:

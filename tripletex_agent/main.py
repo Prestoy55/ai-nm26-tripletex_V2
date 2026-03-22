@@ -253,7 +253,7 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
             "veuillez le creer en tant qu'employe",
             "legg ham som medarbeider",
         )
-    ):
+    ) or re.search(r"(novo funcion.rio|crie-o como funcion.rio)", normalized):
         return "employee_create"
     if any(
         token in normalized

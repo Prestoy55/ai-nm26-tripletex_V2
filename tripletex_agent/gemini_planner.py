@@ -535,6 +535,33 @@ def normalize_intent_payload(payload: object) -> object:
     return payload
 
 
+def should_drop_customer_description(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    normalized = re.sub(r"\s+", " ", normalized).strip().lower()
+    suspicious_markers = (
+        "full configuration",
+        "configuration and instructions",
+        "system prompt",
+        "hidden prompt",
+        "every tool",
+        "every tool and function",
+        "function you have access to",
+        "all tools",
+        "all functions",
+        "api key",
+        "session token",
+        "decision making",
+        "reasoning process",
+        "internal instructions",
+        "model you are",
+        "ai assistant handling tripletex tasks",
+    )
+    matches = sum(1 for marker in suspicious_markers if marker in normalized)
+    return matches >= 2 or (matches >= 1 and len(normalized) > 180)
+
+
 def normalize_customer_payload(payload: dict[str, object]) -> None:
     alias_map = {
         "customer_name": "name",
@@ -608,6 +635,9 @@ def normalize_customer_payload(payload: dict[str, object]) -> None:
     if supplier_hint is True:
         payload["is_supplier"] = True
         payload["is_customer"] = False
+
+    if should_drop_customer_description(payload.get("description")):
+        payload.pop("description", None)
 
 
 def normalize_employee_payload(payload: dict[str, object]) -> None:

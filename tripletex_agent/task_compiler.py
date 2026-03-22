@@ -815,7 +815,7 @@ def compile_create_project(intent: CreateProjectIntent) -> ExecutionPlan:
                     "isInternal": intent.is_internal,
                     "isOffer": intent.is_offer,
                     "isFixedPrice": intent.is_fixed_price or intent.fixed_price_amount is not None,
-                    "fixedPriceAmountCurrency": intent.fixed_price_amount,
+                    "fixedprice": intent.fixed_price_amount,
                     "customer": customer_reference,
                     "projectManager": project_manager_reference,
                 }

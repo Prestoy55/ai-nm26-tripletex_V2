@@ -383,7 +383,18 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
         return "travel_expense"
     if file_count and any(token in normalized for token in ("receipt", "recibo", "kvittering")):
         return "receipt_voucher"
-    if any(token in normalized for token in ("invoice", "faktura", "facture", "factura", "fatura")):
+    if any(
+        token in normalized
+        for token in (
+            "invoice",
+            "faktura",
+            "facture",
+            "factura",
+            "fatura",
+            "rechnung",
+            "erstellen sie eine rechnung",
+        )
+    ):
         return "invoice_create"
     if any(token in normalized for token in ("customer", "kunde", "cliente", "client")):
         return "customer_create"

@@ -306,6 +306,16 @@ def normalize_intent_payload(payload: object) -> object:
             parsed_fixed_price_amount = parse_numeric_string(fixed_price_amount)
             if parsed_fixed_price_amount is not None:
                 payload["fixed_price_amount"] = parsed_fixed_price_amount
+        for unsupported_budget_key in (
+            "budget_amount",
+            "budgetAmount",
+            "budget",
+            "project_budget",
+            "projectBudget",
+            "budget_amount_currency",
+            "budgetAmountCurrency",
+        ):
+            payload.pop(unsupported_budget_key, None)
         customer = payload.get("customer")
         if isinstance(customer, dict):
             normalize_customer_payload(customer)

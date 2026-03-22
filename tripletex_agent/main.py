@@ -269,6 +269,20 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
         )
     ):
         return "supplier_invoice"
+    if any(
+        token in normalized
+        for token in (
+            "register supplier",
+            "registrer leverandor",
+            "registrer leverandor",
+            "registrieren sie den lieferanten",
+            "registrer leverandoren",
+            "registre el proveedor",
+            "registre o fornecedor",
+            "registrer leverandøren",
+        )
+    ):
+        return "customer_create"
     if any(token in normalized for token in ("create product", "opprett produkt", "creez le produit", "crie o produto", "producto")):
         return "product_create"
     if any(token in normalized for token in ("create three departments", "opprett tre avdel", "cree trois depart", "departments in tripletex", "avdelingar", "departamentos")):
@@ -284,6 +298,9 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
             "create project",
             "opprett prosjekt",
             "erstellen sie das projekt",
+            "cycle de vie complet du projet",
+            "projet '",
+            'projet "',
         )
     ):
         return "project_create"

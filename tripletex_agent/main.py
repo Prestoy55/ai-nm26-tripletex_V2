@@ -226,8 +226,10 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
             "bank statement",
             "bank statement",
             "bankutskrift",
+            "kontoauszug",
             "extrato bancario",
             "releve bancaire",
+            "teilzahlungen",
         )
     ):
         return "bank_reconciliation"
@@ -238,6 +240,8 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
             "contrato de trabajo",
             "arbeidskontrakt",
             "contrat de travail",
+            "lettre d'offre",
+            "lettre doffre",
             "carta de oferta",
             "arbeidstilbud",
         )

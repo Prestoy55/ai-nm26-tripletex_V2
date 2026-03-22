@@ -25,6 +25,19 @@ from tripletex_agent.task_intents import (
     VoucherPostingIntent,
 )
 
+_ENSURED_LEDGER_ACCOUNTS: dict[int, dict[str, object]] = {
+    1209: {
+        "number": 1209,
+        "name": "Akkumulerte avskrivninger",
+        "ledgerType": "GENERAL",
+    },
+    6030: {
+        "number": 6030,
+        "name": "Avskrivningskostnad",
+        "ledgerType": "GENERAL",
+    },
+}
+
 
 def compile_task_intent(
     intent: SupportedTaskIntent,
@@ -582,21 +595,18 @@ def compile_create_voucher(intent: CreateVoucherIntent) -> ExecutionPlan:
         )
 
     for account_number in unique_account_numbers:
-        if account_number == 1209:
+        ensured_account_body = _ENSURED_LEDGER_ACCOUNTS.get(account_number)
+        if ensured_account_body is not None:
             actions.append(
                 TaskAction(
-                    id="select_account_1209",
-                    description="Ensure accumulated depreciation account 1209 exists",
+                    id=f"select_account_{account_number}",
+                    description=f"Ensure ledger account {account_number} exists",
                     method="ENSURE_ACCOUNT",
                     path="/ledger/account",
                     body={
                         "source": "{{list_ledger_accounts.values}}",
-                        "number": 1209,
-                        "create_body": {
-                            "number": 1209,
-                            "name": "Akkumulerte avskrivninger",
-                            "ledgerType": "GENERAL",
-                        },
+                        "number": account_number,
+                        "create_body": ensured_account_body,
                     },
                 )
             )

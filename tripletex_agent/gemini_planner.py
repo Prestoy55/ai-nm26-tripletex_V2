@@ -290,6 +290,10 @@ def normalize_intent_payload(payload: object) -> object:
             payload["fixed_price_amount"] = payload.pop("fixed_price_amount_currency")
         if "fixedPriceAmountCurrency" in payload and "fixed_price_amount" not in payload:
             payload["fixed_price_amount"] = payload.pop("fixedPriceAmountCurrency")
+        if "fixed_price_agreement_amount" in payload and "fixed_price_amount" not in payload:
+            payload["fixed_price_amount"] = payload.pop("fixed_price_agreement_amount")
+        if "fixedPriceAgreementAmount" in payload and "fixed_price_amount" not in payload:
+            payload["fixed_price_amount"] = payload.pop("fixedPriceAgreementAmount")
         project_manager = payload.pop("project_manager", None)
         if project_manager is None:
             project_manager = payload.pop("project_leader", None)
@@ -336,6 +340,8 @@ def normalize_intent_payload(payload: object) -> object:
             "budgetCurrency",
             "budget_amount_currency",
             "budgetAmountCurrency",
+            "fixed_price_agreement_amount_currency",
+            "fixedPriceAgreementAmountCurrency",
         ):
             payload.pop(unsupported_budget_key, None)
         customer = payload.get("customer")
@@ -390,6 +396,12 @@ def normalize_intent_payload(payload: object) -> object:
             payload["invoice_due_date"] = payload.pop("due_date")
         if "invoiceDueDate" in payload and "invoice_due_date" not in payload:
             payload["invoice_due_date"] = payload.pop("invoiceDueDate")
+        for key in ("send_to_customer", "register_full_payment", "is_credit_note"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parsed_value = parse_boolean_string(value)
+                if parsed_value is not None:
+                    payload[key] = parsed_value
 
         payload.pop("project_name", None)
         payload.pop("currency", None)
@@ -671,6 +683,7 @@ def normalize_employee_payload(payload: dict[str, object]) -> None:
         "working_hours_per_day": "daily_working_hours",
         "hours_per_day": "daily_working_hours",
         "standard_daily_hours": "daily_working_hours",
+        "standard_working_hours_per_day": "daily_working_hours",
         "startDate": "start_date",
     }
 
@@ -757,6 +770,10 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
         "unit_price": "unit_price_excluding_vat_currency",
         "unitPrice": "unit_price_excluding_vat_currency",
         "price": "unit_price_excluding_vat_currency",
+        "unit_price_excluding_vat": "unit_price_excluding_vat_currency",
+        "unitPriceExcludingVat": "unit_price_excluding_vat_currency",
+        "unit_price_including_vat": "unit_price_including_vat_currency",
+        "unitPriceIncludingVat": "unit_price_including_vat_currency",
         "qty": "quantity",
         "vat_rate_percent": "vat_percent",
         "vatRatePercent": "vat_percent",
@@ -765,6 +782,18 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
     for alias, target in alias_map.items():
         if alias in payload and target not in payload:
             payload[target] = payload.pop(alias)
+
+    for target_key, alias_keys in (
+        ("unit_price_excluding_vat_currency", ("unit_price_excluding_vat", "unitPriceExcludingVat")),
+        ("unit_price_including_vat_currency", ("unit_price_including_vat", "unitPriceIncludingVat")),
+    ):
+        current_value = payload.get(target_key)
+        if isinstance(current_value, str) and parse_numeric_string(current_value) is None:
+            for alias in alias_keys:
+                alias_value = payload.pop(alias, None)
+                if alias_value is not None:
+                    payload[target_key] = alias_value
+                    break
 
     for key in ("unit_price_excluding_vat_currency", "unit_price_including_vat_currency"):
         value = payload.get(key)
@@ -1253,6 +1282,15 @@ def parse_numeric_string(value: str) -> float | None:
         return None
 
 
+def parse_boolean_string(value: str) -> bool | None:
+    normalized = value.strip().lower()
+    if normalized in {"true", "yes", "1"}:
+        return True
+    if normalized in {"false", "no", "0"}:
+        return False
+    return None
+
+
 def parse_address_string(value: str) -> dict[str, object]:
     cleaned = value.strip()
     if not cleaned:
@@ -1635,6 +1673,7 @@ def is_bank_reconciliation_prompt(prompt: str, attachments: list[PreparedAttachm
             "bank statement",
             "bankutskrift",
             "bankutskrifta",
+            "kontoauszug",
             "releve bancaire",
             "extrato bancario",
             "reconcile",
@@ -1642,6 +1681,8 @@ def is_bank_reconciliation_prompt(prompt: str, attachments: list[PreparedAttachm
             "reconcile",
             "avstem",
             "rapprochez",
+            "gleichen sie",
+            "teilzahlungen",
         )
     )
 

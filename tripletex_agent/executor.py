@@ -67,12 +67,30 @@ class PlanExecutor:
                 if not isinstance(resolved_path, str):
                     raise PlanExecutionError(f"Resolved path for action {action.id} must be a string")
 
-                status_code, response_payload = self.client.request(
-                    action.method,
-                    resolved_path,
-                    params=resolved_params,
-                    json_body=resolved_body,
-                )
+                try:
+                    status_code, response_payload = self.client.request(
+                        action.method,
+                        resolved_path,
+                        params=resolved_params,
+                        json_body=resolved_body,
+                    )
+                except TripletexApiError as exc:
+                    if should_retry_invoice_without_sending(
+                        action_method=action.method,
+                        action_path=resolved_path,
+                        action_params=resolved_params,
+                        error=exc,
+                    ):
+                        fallback_params = dict(resolved_params or {})
+                        fallback_params["sendToCustomer"] = False
+                        status_code, response_payload = self.client.request(
+                            action.method,
+                            resolved_path,
+                            params=fallback_params,
+                            json_body=resolved_body,
+                        )
+                    else:
+                        raise
 
                 context[action.id] = response_payload
                 if action.save_as:
@@ -165,6 +183,24 @@ def compact_payload(value: Any) -> Any:
         return compacted_list
 
     return value
+
+
+def should_retry_invoice_without_sending(
+    *,
+    action_method: str,
+    action_path: str,
+    action_params: Any,
+    error: TripletexApiError,
+) -> bool:
+    if action_method != "POST" or action_path != "/invoice":
+        return False
+    if not isinstance(action_params, dict):
+        return False
+    if action_params.get("sendToCustomer") is not True:
+        return False
+
+    message = str(error).lower()
+    return "bankkontonummer" in message or "bank account" in message
 
 
 def run_select_action(action_id: str, payload: Any) -> Any:

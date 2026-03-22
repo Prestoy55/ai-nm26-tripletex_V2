@@ -282,6 +282,10 @@ def normalize_intent_payload(payload: object) -> object:
         if "fixedPriceAmountCurrency" in payload and "fixed_price_amount" not in payload:
             payload["fixed_price_amount"] = payload.pop("fixedPriceAmountCurrency")
         project_manager = payload.pop("project_manager", None)
+        if project_manager is None:
+            project_manager = payload.pop("project_leader", None)
+        if project_manager is None:
+            project_manager = payload.pop("projectLeader", None)
         if isinstance(project_manager, dict):
             if "project_manager_email" not in payload and isinstance(project_manager.get("email"), str):
                 payload["project_manager_email"] = project_manager["email"]
@@ -289,6 +293,13 @@ def normalize_intent_payload(payload: object) -> object:
                 project_manager.get("name"),
                 project_manager.get("full_name"),
             )
+            if not isinstance(manager_name, str):
+                first_name = project_manager.get("first_name")
+                last_name = project_manager.get("last_name")
+                if isinstance(first_name, str) and "project_manager_first_name" not in payload:
+                    payload["project_manager_first_name"] = first_name
+                if isinstance(last_name, str) and "project_manager_last_name" not in payload:
+                    payload["project_manager_last_name"] = last_name
             if isinstance(manager_name, str):
                 first_name, last_name = split_person_name(manager_name)
                 if first_name and "project_manager_first_name" not in payload:
@@ -421,6 +432,8 @@ def normalize_intent_payload(payload: object) -> object:
             payload["details"] = details
 
         expenses = payload.pop("expenses", None)
+        if expenses is None:
+            expenses = payload.pop("travel_expense_lines", None)
         if isinstance(expenses, dict):
             expenses = [expenses]
 
@@ -456,11 +469,11 @@ def normalize_intent_payload(payload: object) -> object:
             for entry in expenses:
                 if not isinstance(entry, dict):
                     continue
-                entry_type = str(entry.get("type") or "").strip().lower()
+                entry_type = str(first_non_none(entry.get("type"), entry.get("expense_type")) or "").strip().lower()
                 amount = entry.get("amount")
                 description = entry.get("description")
                 currency = entry.get("currency")
-                if entry_type in {"daily_allowance", "per_diem", "diem"}:
+                if entry_type in {"daily_allowance", "per_diem", "diem", "diet"}:
                     number_of_days = None
                     if isinstance(description, str):
                         days_match = re.search(r"(\d+)\s+days?", description, flags=re.IGNORECASE)

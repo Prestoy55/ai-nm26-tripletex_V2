@@ -329,7 +329,16 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
         return "foreign_currency_payment"
     if any(token in normalized for token in ("find de 4 errors", "finn de 4 feilene", "revise todos os vouchers", "hauptbuch", "livro razao")):
         return "ledger_correction"
-    if any(token in normalized for token in ("travel expense", "reisekost", "despesa de viagem", "frais de deplacement")):
+    if any(
+        token in normalized
+        for token in (
+            "travel expense",
+            "reisekost",
+            "reiseregning",
+            "despesa de viagem",
+            "frais de deplacement",
+        )
+    ):
         return "travel_expense"
     if file_count and any(token in normalized for token in ("receipt", "recibo", "kvittering")):
         return "receipt_voucher"

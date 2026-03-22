@@ -332,6 +332,8 @@ def normalize_intent_payload(payload: object) -> object:
             "budget",
             "project_budget",
             "projectBudget",
+            "budget_currency",
+            "budgetCurrency",
             "budget_amount_currency",
             "budgetAmountCurrency",
         ):

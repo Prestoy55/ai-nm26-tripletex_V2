@@ -299,6 +299,8 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
             "opprett prosjekt",
             "erstellen sie das projekt",
             "cycle de vie complet du projet",
+            "ciclo de vida completo del proyecto",
+            "ciclo de vida completo do projeto",
             "projet '",
             'projet "',
         )

@@ -694,6 +694,8 @@ def normalize_invoice_line_payload(payload: dict[str, object]) -> None:
         "unitPrice": "unit_price_excluding_vat_currency",
         "price": "unit_price_excluding_vat_currency",
         "qty": "quantity",
+        "vat_rate_percent": "vat_percent",
+        "vatRatePercent": "vat_percent",
     }
 
     for alias, target in alias_map.items():

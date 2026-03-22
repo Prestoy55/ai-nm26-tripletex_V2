@@ -273,7 +273,19 @@ def classify_prompt_family(prompt: str, file_count: int) -> str:
         return "product_create"
     if any(token in normalized for token in ("create three departments", "opprett tre avdel", "cree trois depart", "departments in tripletex", "avdelingar", "departamentos")):
         return "department_batch_create"
-    if any(token in normalized for token in ("project manager", "prosjektleder", "director del proyecto", "gerente de projeto")):
+    if any(
+        token in normalized
+        for token in (
+            "project manager",
+            "prosjektleder",
+            "projektleiter",
+            "director del proyecto",
+            "gerente de projeto",
+            "create project",
+            "opprett prosjekt",
+            "erstellen sie das projekt",
+        )
+    ):
         return "project_create"
     if any(
         token in normalized
